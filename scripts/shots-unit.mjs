@@ -1,0 +1,27 @@
+import { chromium } from 'playwright';
+const BASE = process.env.BASE || 'http://localhost:5173/';
+const b = await chromium.launch(); const vp = { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 };
+const p = await (await b.newContext(vp)).newPage();
+const shot = async (n) => { await p.waitForTimeout(400); await p.screenshot({ path: `screenshots/${n}.png` }); };
+await p.goto(BASE + '#/home'); await p.waitForTimeout(800); await p.evaluate(() => localStorage.clear()); await p.goto(BASE + '#/equipment'); await p.waitForTimeout(300);
+await p.goto(BASE + '#/nameplate/sys1'); await shot('26a-nameplate-scan-button');
+await p.goto(BASE + '#/scan/sys1'); await p.getByText('Try with an example tag').click();
+await p.getByText('Check these match your tag').waitFor({ timeout: 90000 });
+await p.evaluate(() => scrollTo(0, document.body.scrollHeight)); await shot('26-tag-scan-result');
+console.log('ocr fields', await p.locator('input').evaluateAll((e) => e.map((x) => x.value)));
+await p.goto(BASE + '#/qr/sys1'); await p.waitForTimeout(800); await shot('27-unit-qr-label');
+const url = await p.evaluate(() => { const s = JSON.parse(localStorage.getItem('homekeep-state-v1')); return s.equipment[0].unitId; });
+const href = await p.locator('a[download]').evaluate(() => null);
+const qrUrl = await p.evaluate(async () => { const m = await import('/src/unit.js'); const s = JSON.parse(localStorage.getItem('homekeep-state-v1')); return m.unitUrl(m.makeSnapshot(s.equipment[0], s.services)); });
+console.log('qr url length', qrUrl.length);
+await p.goto(qrUrl); await p.waitForTimeout(600); await shot('28a-unit-scan-owner'); console.log('owner landed', p.url().slice(-10));
+const p2 = await (await b.newContext(vp)).newPage(); await p2.goto(qrUrl); await p2.waitForTimeout(700);
+await p2.screenshot({ path: 'screenshots/28b-unit-scan-tech.png' });
+const txt = await p2.innerText('body'); console.log('leak check', /Example Homeowner|Demo St|\$\d/.test(txt));
+// old snapshot
+const old = await p2.evaluate((u) => { const s = u.split('#/unit/')[1]; const o = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')), c=>c.charCodeAt(0)))); o.a='2026-03-01'; const e=btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(o)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); return u.split('#')[0]+'#/unit/'+e; }, qrUrl);
+await p2.goto('about:blank'); await p2.goto(old); await p2.waitForTimeout(600); await p2.screenshot({ path: 'screenshots/28c-unit-scan-old-snapshot.png' });
+const p3 = await (await b.newContext(vp)).newPage(); await p3.goto(BASE + '#/?fresh=1'); await p3.waitForTimeout(600); await p3.screenshot({ path: 'screenshots/29a-fresh-start-signup.png' });
+await p3.locator('input').first().fill('Jane Homeowner'); await p3.getByText('Get started').click(); await p3.goto(BASE + '#/home'); await p3.waitForTimeout(500); await p3.screenshot({ path: 'screenshots/29b-fresh-empty-home.png' });
+await p3.goto(BASE + '#/log'); await p3.waitForTimeout(400); await p3.screenshot({ path: 'screenshots/29c-fresh-empty-log.png' });
+await b.close();

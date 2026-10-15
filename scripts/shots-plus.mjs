@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+const BASE = process.env.BASE || 'http://localhost:5173/'; const K = 'homekeep-state-v1';
+const b = await chromium.launch(); const p = await (await b.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 })).newPage();
+const shot = (n) => p.screenshot({ path: `screenshots/${n}.png` });
+const nav = async (h) => { await p.goto(BASE + '#/' + h); await p.waitForTimeout(400); };
+await p.goto(BASE); await p.evaluate(() => localStorage.clear()); await nav('home'); await nav('plus');
+await nav('company/' + encodeURIComponent('Example HVAC Co.')); await shot('20-company-costs');
+await nav('log'); await p.evaluate(() => window.scrollTo(0, 0)); await shot('20b-log-usual-costs');
+await nav('callhelper/leak'); await p.getByRole('button', { name: 'Not sure' }).first().click(); await p.waitForTimeout(150);
+await nav('callhelper/gas'); await shot('22-call-helper-safety');
+await nav('callhelper'); await shot('22b-call-helper-symptoms');
+await nav('insights/nocool'); await shot('23-history-insights');
+await p.evaluate((k) => { const s = JSON.parse(localStorage.getItem(k)); s.activeEquipmentId = 'sys2'; localStorage.setItem(k, JSON.stringify(s)); }, K);
+await p.goto(BASE + '#/insights'); await p.reload(); await p.waitForTimeout(400); await shot('24-insights-locked');
+await b.close(); console.log('done');
