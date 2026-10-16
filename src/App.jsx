@@ -15,6 +15,12 @@ const TITLES = { home: APP_NAME, equipment: 'My Equipment', nameplate: 'Nameplat
   beforecall: 'Thinking About a Call?', tips: 'Power Bill & Comfort', warranty: 'Warranty Tracker', homes: 'Homes & Equipment',
   report: 'Service History Report', replace: 'Replacement Planning', settings: 'Account', company: 'Company', callhelper: 'Thinking About a Call?', insights: 'What Might Be Going On', signup: 'Create Account', auth: 'Sign In', scan: 'Scan the Data Tag', qr: 'Unit QR Label', unit: 'Unit History', paywall: `${APP_NAME} Plus` };
 
+// Hidden developer toggle: ?dev=1 (or #/?dev=1) turns it on for this device, ?dev=0 turns it off.
+const DEV_KEY = 'homeownly-dev';
+{ const m = (location.search + location.hash).match(/[?&]dev=([01])/); if (m) m[1] === '1' ? localStorage.setItem(DEV_KEY, '1') : localStorage.removeItem(DEV_KEY); }
+const isDev = () => localStorage.getItem(DEV_KEY) === '1';
+// Real accounts: 2-month trial counted from account creation, unless a dev control set it on purpose.
+const realTrial = (s, user) => { if (!s.plan.subscribed && s.plan.trialSet !== 'dev' && user?.created_at) s.plan = { ...s.plan, trialStart: user.created_at }; return s; };
 const parseHash = () => { const [s, p] = location.hash.replace(/^#\/?/, '').split('/'); return { screen: s || 'home', param: p }; };
 
 export default function App({ authResult = { status: 'none' } }) {
@@ -24,7 +30,7 @@ export default function App({ authResult = { status: 'none' } }) {
   useEffect(() => { Promise.all([backend.load(STATE_KEY), supabase.auth.getSession()]).then(([s, { data }]) => {
     const sess = data.session;
     // Signed in (or just came back from an email link): never show demo data.
-    if (sess) { s = s && !s.demo ? s : makeEmpty(); s = { ...s, demo: false, user: { ...s.user, email: sess.user.email, signedUp: true } }; setSt(s); setLoaded(true); return; }
+    if (sess) { s = s && !s.demo ? s : makeEmpty(); s = realTrial({ ...s, demo: false, plan: { ...s.plan }, user: { ...s.user, email: sess.user.email, signedUp: true } }, sess.user); setSt(s); setLoaded(true); return; }
     if (authResult.status !== 'none') { s = s && !s.demo ? s : makeEmpty(); setSt(s); setLoaded(true); return; }
     // Blank account: #/?fresh=1 (or ?fresh=1 in the page URL) always opens an empty account.
     if (/[?&]fresh=1/.test(location.hash + location.search)) { s = makeEmpty(); history.replaceState(null, '', location.pathname + '#/signup'); }
@@ -47,7 +53,7 @@ export default function App({ authResult = { status: 'none' } }) {
   useEffect(() => { if (!userId || !loaded) { setSync({ status: 'off' }); return; }
     let dead = false; setSync({ status: 'loading' });
     const email = session.user.email;
-    const own = (s) => { s = structuredClone(s); s.demo = false; s.user = { ...s.user, email, signedUp: true }; return s; };
+    const own = (s) => { s = structuredClone(s); s.demo = false; s.user = { ...s.user, email, signedUp: true }; return realTrial(s, session.user); };
     cloud.load(userId).then((row) => { if (dead) return;
       if (row?.data && Object.keys(row.data).length) { setSt(own(row.data)); setSync({ status: 'ok', at: row.updated_at }); return; }
       const local = JSON.parse(localStorage.getItem(STATE_KEY) || 'null');
@@ -58,7 +64,7 @@ export default function App({ authResult = { status: 'none' } }) {
     function fail(e) { if (!dead) setSync({ status: e instanceof SetupMissing ? 'setup' : 'error', msg: e.message }); }
     return () => { dead = true; };
   }, [userId, loaded]);
-  useEffect(() => { if (!userId || !st || !['ok', 'saving', 'error'].includes(sync.status)) return;
+  useEffect(() => { if (!userId || !st || st.demo || !['ok', 'saving', 'error'].includes(sync.status)) return;
     const t = setTimeout(async () => {
       setSync((x) => ({ ...x, status: 'saving' }));
       try {
@@ -69,7 +75,7 @@ export default function App({ authResult = { status: 'none' } }) {
     }, 1500);
     return () => clearTimeout(t);
   }, [st, userId, sync.status === 'ask' || sync.status === 'loading' || sync.status === 'setup']);
-  const resolveUpload = (upload) => { const base = upload ? sync.local : makeEmpty(); const s = structuredClone(base); s.demo = false; s.user = { ...s.user, email: session.user.email, signedUp: true };
+  const resolveUpload = (upload) => { const base = upload ? sync.local : makeEmpty(); const s = structuredClone(base); s.demo = false; s.user = { ...s.user, email: session.user.email, signedUp: true }; realTrial(s, session.user);
     setSt(s); setSync({ status: 'saving' }); cloud.save(userId, s).then(() => setSync({ status: 'ok' }), (e) => setSync({ status: e instanceof SetupMissing ? 'setup' : 'error', msg: e.message })); };
   useEffect(() => { const f = () => { setRoute(parseHash()); window.scrollTo(0, 0); }; addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
   if (!loaded) return null;
@@ -79,7 +85,7 @@ export default function App({ authResult = { status: 'none' } }) {
   const go = (s, p) => { location.hash = `/${s}${p ? '/' + p : ''}`; };
   const up = (fn) => setSt((s) => { const c = structuredClone(s); fn(c); return c; });
   const eq = st.equipment.find((e) => e.id === st.activeEquipmentId) || st.equipment[0];
-  const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync, authResult };
+  const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync, authResult, dev: !!st.demo || isDev() };
   let { screen } = route;
   if (!st.user.signedUp && screen !== 'auth') screen = 'signup';
   if (session && screen === 'signup') screen = 'home';
@@ -395,7 +401,7 @@ function Paywall({ ctx }) {
     <p className="center muted">Keep Power Bill Check, warranty tracking, multi-home, reports and more.</p>
     <button className="btn" onClick={() => sub('yearly')}>{money(PRICING.yearly)} / year <small>(save 35%)</small></button>
     <button className="btn ghost" onClick={() => sub('monthly')}>{money(PRICING.monthly)} / month</button>
-    <p className="note">Prototype: no real payment is taken.</p>
+    {ctx.dev && <p className="note">Demo: no real payment is taken.</p>}
   </Card>);
 }
 
@@ -424,7 +430,7 @@ function Reorder({ ctx }) {
   const { eq } = ctx; const url = filterUrl(eq.filterSize);
   return (<Card><div className="big">{eq.filterSize}</div><p className="center muted">Exact size for “{eq.name}” · every {eq.filterMonths} months</p>
     <a className="btn" href={url} target="_blank" rel="noopener sponsored">Reorder / Auto-ship</a>
-    <p className="note">Partner: {FILTER_PARTNER.name}. Link: <code>{url}</code></p>
+    {ctx.dev && <p className="note">Partner: {FILTER_PARTNER.name}. Link: <code>{url}</code></p>}
     <p className="muted">Double-check the size printed on the edge of your current filter before ordering.</p></Card>);
 }
 
@@ -515,21 +521,42 @@ function Replace({ ctx }) {
 function Settings({ ctx }) {
   const { st, up, plan } = ctx; const tech = st.techReferralCodes.find((c) => c.code === st.user.referredBy);
   return (<>
-    <Card title="Profile"><Row k="Name" v={st.user.name} /><Row k="Email" v={st.user.email} /><Row k="Referred by" v={tech ? `${tech.techName} (${tech.code})` : st.user.referredBy || '—'} /></Card>
+    <Card title="Profile"><Row k="Name" v={st.user.name} /><Row k="Email" v={st.user.email} />{st.user.referredBy && <Row k="Referred by" v={tech ? `${tech.techName} (${tech.code})` : st.user.referredBy} />}</Card>
     <Card title="Cloud account">{ctx.session ? <>
       <Row k="Signed in as" v={ctx.session.user.email} /><Row k="Sync" v={{ ok: 'Saved to cloud ✓', saving: 'Saving…', loading: 'Loading…', ask: 'Waiting for your choice', setup: 'Setup not finished', error: 'Offline — saved on this device' }[ctx.sync.status] || '—'} />
       <button className="btn ghost" onClick={async () => { await supabase.auth.signOut(); if (confirm('Signed out. Also remove your data from this device?')) { localStorage.removeItem(STATE_KEY); location.hash = '/?fresh=1'; location.reload(); } }}>Sign out</button></>
       : <><p className="muted">Sign in to back up your data and use it on any device.</p><button className="btn" onClick={() => ctx.go('auth')}>Sign in / create account</button></>}</Card>
     <Card title="Plan"><Row k="Status" v={plan.label} />
-      {!st.plan.subscribed && <button className="btn ghost" onClick={() => up((s) => { s.plan.trialStart = new Date(Date.now() - 61 * 864e5).toISOString(); })}>Demo: simulate trial ended</button>}
-      <button className="btn ghost" onClick={() => up((s) => { s.plan = { subscribed: false, trialStart: null, interval: null }; })}>Demo: reset to free (no trial)</button></Card>
-    <Card title="For techs: referral codes"><p className="muted">Share your code; homeowners enter it at signup.{REFERRAL.enabled ? '' : ` (Later: ${money(REFERRAL.commissionPerPaidSignup)} per paid signup.)`}</p>
+      {plan.trial && <p className="muted small">Your free trial of {APP_NAME} Plus ends in {plan.daysLeft} days.</p>}
+      {plan.expired && <button className="btn" onClick={() => ctx.go('paywall')}>See {APP_NAME} Plus options</button>}</Card>
+    {ctx.dev ? <Card title="For techs: referral codes"><p className="muted">Share your code; homeowners enter it at signup.{REFERRAL.enabled ? '' : ` (Later: ${money(REFERRAL.commissionPerPaidSignup)} per paid signup.)`}</p>
       {st.techReferralCodes.map((c) => <Row key={c.code} k={c.techName} v={c.code} />)}</Card>
-    <button className="btn ghost" onClick={() => { up((s) => { s.user.signedUp = false; }); }}>Demo: view signup screen</button>
-    <button className="btn ghost" onClick={() => { if (confirm('Erase everything on this device and start with an empty account?')) startFresh(); }}>🧹 Start fresh (empty account)</button>
-    <button className="btn ghost danger" onClick={() => { if (confirm('Replace everything with example demo data?')) { localStorage.clear(); location.hash = '/home'; location.reload(); } }}>Load example demo data</button>
-    <p className="note center">{APP_NAME} prototype · {ctx.session ? 'synced to your account, cached on this device' : 'data stays on this device'}</p>
+      : !st.user.referredBy && <ReferralEntry ctx={ctx} />}
+    {ctx.session && <Card title="Your data"><p className="muted small">Removes your saved home, equipment and history from the cloud and this device, and turns off your unit QR labels.</p>
+      <button className="btn ghost danger" onClick={async () => { if (!confirm('Delete all of your HomeOwnly data? This can’t be undone.')) return;
+        const uidv = ctx.session.user.id;
+        const r1 = await supabase.from('unit_shares').delete().eq('owner', uidv); const r2 = await supabase.from('profiles_state').delete().eq('user_id', uidv);
+        if (r1.error || r2.error) { alert('Couldn’t delete right now — check your connection and try again.'); return; }
+        localStorage.removeItem(STATE_KEY); await supabase.auth.signOut(); location.hash = '/?fresh=1'; location.reload(); }}>🗑️ Delete my data</button></Card>}
+    {ctx.dev && <Card title="🛠 Developer / demo tools">
+      {!st.plan.subscribed && <button className="btn ghost" onClick={() => up((s) => { s.plan.trialStart = new Date(Date.now() - 61 * 864e5).toISOString(); s.plan.trialSet = 'dev'; })}>Demo: simulate trial ended</button>}
+      <button className="btn ghost" onClick={() => up((s) => { s.plan = { subscribed: false, trialStart: null, interval: null, trialSet: 'dev' }; })}>Demo: reset to free (no trial)</button>
+      {st.plan.trialSet === 'dev' && ctx.session && <button className="btn ghost" onClick={() => up((s) => { delete s.plan.trialSet; s.plan.subscribed = false; realTrial(s, ctx.session.user); })}>Restore real trial (from signup date)</button>}
+      {!ctx.session && <button className="btn ghost" onClick={() => { up((s) => { s.user.signedUp = false; }); }}>Demo: view signup screen</button>}
+      {!ctx.session && <button className="btn ghost" onClick={() => { if (confirm('Erase everything on this device and start with an empty account?')) startFresh(); }}>🧹 Start fresh (empty account)</button>}
+      {ctx.session ? <p className="muted small">Sign out to load the example demo (it never replaces your cloud data).</p>
+        : <button className="btn ghost danger" onClick={() => { if (confirm('Replace everything on this device with example demo data?')) { localStorage.removeItem(STATE_KEY); location.hash = '/home'; location.reload(); } }}>Load example demo data</button>}
+      {isDev() && <button className="link" onClick={() => { localStorage.removeItem(DEV_KEY); location.reload(); }}>Turn off developer mode</button>}
+    </Card>}
+    <p className="note center">{ctx.session ? 'Synced to your account · saved on this device for offline use' : 'Saved on this device'}</p>
   </>);
+}
+
+function ReferralEntry({ ctx }) {
+  const { st, up } = ctx; const [code, setCode] = useState('');
+  return (<Card title="Referred by a tech?"><p className="muted small">If a technician gave you a referral code, enter it here.</p>
+    <Field label="Referral code"><input value={code} onChange={(e) => setCode(e.target.value)} autoCapitalize="characters" /></Field>
+    <button className="btn ghost" disabled={!code.trim()} onClick={() => up((s) => { s.user.referredBy = code.trim().toUpperCase(); })}>Save code</button></Card>);
 }
 
 function Signup({ ctx }) {
@@ -546,7 +573,7 @@ function Signup({ ctx }) {
     </Card>
     <button className="link" onClick={() => go('auth')}>Already have an account? Sign in ›</button>
     {st.demo ? <button className="btn ghost" onClick={startFresh}>🧹 Start fresh (empty account)</button>
-      : <button className="btn ghost" onClick={() => { localStorage.clear(); location.hash = '/home'; location.reload(); }}>👀 Explore with example demo data</button>}
+      : <button className="btn ghost" onClick={() => { localStorage.removeItem(STATE_KEY); location.hash = '/home'; location.reload(); }}>👀 Explore with example demo data</button>}
   </>);
 }
 
@@ -603,7 +630,7 @@ function TagScan({ ctx, param }) {
     <Card title="Photo of the data tag">
       <p className="muted">The data tag is the metal or sticker label on the side of the outdoor unit (or inside the furnace closet door area). Take the photo from outside the unit — no need to open anything.</p>
       <label className="btn">📷 Take or upload a photo<input type="file" accept="image/*" capture="environment" onChange={file} hidden /></label>
-      <button className="btn ghost" onClick={() => read(`${import.meta.env.BASE_URL}example-tag.png`)}>Try with an example tag</button>
+      {ctx.dev && <button className="btn ghost" onClick={() => read(`${import.meta.env.BASE_URL}example-tag.png`)}>Try with an example tag</button>}
       {img && <img className="tagimg" src={img} alt="Data tag" />}
       {busy > 0 && <p className="muted">Reading the tag… {busy > 1 ? busy + '%' : ''} (runs on your phone, first time may take a moment)</p>}
       {err && <div className="banner warn">{err}</div>}
