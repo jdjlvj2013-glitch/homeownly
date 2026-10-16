@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { APP_NAME, PRICING, FILTER_PARTNER, CATEGORIES, REFERRAL } from './config.js';
-import { backend, STATE_KEY, supabase, cloud, redirectUrl, SetupMissing } from './storage.js';
+import { backend, STATE_KEY, supabase, cloud, redirectUrl, SetupMissing, LAST_EMAIL_KEY } from './storage.js';
 import { makeSeed, makeEmpty, uid } from './seed.js';
 import { parseTag, makeSnapshot, decodeSnapshot, unitUrl, liveUnitUrl, PART_RE } from './unit.js';
 import QRCode from 'qrcode';
@@ -17,11 +17,15 @@ const TITLES = { home: APP_NAME, equipment: 'My Equipment', nameplate: 'Nameplat
 
 const parseHash = () => { const [s, p] = location.hash.replace(/^#\/?/, '').split('/'); return { screen: s || 'home', param: p }; };
 
-export default function App() {
+export default function App({ authResult = { status: 'none' } }) {
   const [st, setSt] = useState(null);
   const [route, setRoute] = useState(parseHash());
   const [loaded, setLoaded] = useState(false);
-  useEffect(() => { backend.load(STATE_KEY).then((s) => {
+  useEffect(() => { Promise.all([backend.load(STATE_KEY), supabase.auth.getSession()]).then(([s, { data }]) => {
+    const sess = data.session;
+    // Signed in (or just came back from an email link): never show demo data.
+    if (sess) { s = s && !s.demo ? s : makeEmpty(); s = { ...s, demo: false, user: { ...s.user, email: sess.user.email, signedUp: true } }; setSt(s); setLoaded(true); return; }
+    if (authResult.status !== 'none') { s = s && !s.demo ? s : makeEmpty(); setSt(s); setLoaded(true); return; }
     // Blank account: #/?fresh=1 (or ?fresh=1 in the page URL) always opens an empty account.
     if (/[?&]fresh=1/.test(location.hash + location.search)) { s = makeEmpty(); history.replaceState(null, '', location.pathname + '#/signup'); }
     // A unit QR opened on a device with no account must not create demo data.
@@ -43,7 +47,7 @@ export default function App() {
   useEffect(() => { if (!userId || !loaded) { setSync({ status: 'off' }); return; }
     let dead = false; setSync({ status: 'loading' });
     const email = session.user.email;
-    const own = (s) => { s = structuredClone(s); s.user = { ...s.user, email: s.user?.email || email, signedUp: true }; return s; };
+    const own = (s) => { s = structuredClone(s); s.demo = false; s.user = { ...s.user, email, signedUp: true }; return s; };
     cloud.load(userId).then((row) => { if (dead) return;
       if (row?.data && Object.keys(row.data).length) { setSt(own(row.data)); setSync({ status: 'ok', at: row.updated_at }); return; }
       const local = JSON.parse(localStorage.getItem(STATE_KEY) || 'null');
@@ -65,7 +69,7 @@ export default function App() {
     }, 1500);
     return () => clearTimeout(t);
   }, [st, userId, sync.status === 'ask' || sync.status === 'loading' || sync.status === 'setup']);
-  const resolveUpload = (upload) => { const base = upload ? sync.local : makeEmpty(); const s = structuredClone(base); s.user = { ...s.user, email: s.user?.email || session.user.email, signedUp: true };
+  const resolveUpload = (upload) => { const base = upload ? sync.local : makeEmpty(); const s = structuredClone(base); s.demo = false; s.user = { ...s.user, email: session.user.email, signedUp: true };
     setSt(s); setSync({ status: 'saving' }); cloud.save(userId, s).then(() => setSync({ status: 'ok' }), (e) => setSync({ status: e instanceof SetupMissing ? 'setup' : 'error', msg: e.message })); };
   useEffect(() => { const f = () => { setRoute(parseHash()); window.scrollTo(0, 0); }; addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
   if (!loaded) return null;
@@ -75,9 +79,10 @@ export default function App() {
   const go = (s, p) => { location.hash = `/${s}${p ? '/' + p : ''}`; };
   const up = (fn) => setSt((s) => { const c = structuredClone(s); fn(c); return c; });
   const eq = st.equipment.find((e) => e.id === st.activeEquipmentId) || st.equipment[0];
-  const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync };
+  const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync, authResult };
   let { screen } = route;
   if (!st.user.signedUp && screen !== 'auth') screen = 'signup';
+  if (session && screen === 'signup') screen = 'home';
   const S = SCREENS[screen] || Home;
   const gated = PAID.includes(screen);
   const tab = TABS.find(([t]) => t === screen) ? screen : ({ nameplate: 'equipment', addlog: 'log', company: 'log', filter: 'home', agreement: 'home' }[screen] || (gated ? 'plus' : 'home'));
@@ -88,7 +93,7 @@ export default function App() {
         <h1>{TITLES[screen] || APP_NAME}</h1>
         {gated && <span className="pill">PLUS</span>}
       </header>
-      {st.demo && screen !== 'signup' && <div className="demo">EXAMPLE DEMO DATA — not a real home</div>}
+      {st.demo && screen !== 'signup' && <div className="demo">👀 EXAMPLE DEMO — not your account, not a real home · <a href="#/auth">Sign in</a> · <a href="#/?fresh=1" onClick={() => setTimeout(() => location.reload(), 0)}>Start your own</a></div>}
       {sync.status === 'setup' && <div className="banner warn">☁️ Cloud setup isn’t finished yet, so your data is only saved on this device for now. (The database tables haven’t been created.)</div>}
       {sync.status === 'error' && <div className="banner warn">☁️ Couldn’t reach the cloud — changes are saved on this device and will sync when you’re back online.</div>}
       {sync.status === 'ask' && <div className="banner ok"><b>Welcome!</b> This device already has {APP_NAME} data. Upload it to your account?
@@ -551,8 +556,11 @@ const SCREENS = { scan: TagScan, qr: QrLabel, home: Home, equipment: Equipment, 
 
 /* ---------------- SIGN IN (magic link or email + password) ---------------- */
 function Auth({ ctx }) {
-  const { session, go } = ctx; const [f, setF] = useState({ email: '', pw: '' }); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const run = async (fn) => { setBusy(true); setMsg(null); try { const { error, data } = await fn(); if (error) throw error; return data; } catch (e) { setMsg({ k: 'danger', t: e.message }); } finally { setBusy(false); } };
+  const { session, go } = ctx; const ar = ctx.authResult || {};
+  const [f, setF] = useState({ email: ar.email || localStorage.getItem(LAST_EMAIL_KEY) || '', pw: '' });
+  const [msg, setMsg] = useState(ar.status === 'confirmed-signin' ? { k: 'ok', t: '✅ Your email is confirmed! Please sign in below to open your account. (The link opened in a different browser than the one you signed up in, so we couldn’t sign you in automatically.)' }
+    : ar.status === 'error' ? { k: 'warn', t: `That email link didn’t work (${ar.message}). It may have expired or already been used — sign in below, or request a new link.` } : null); const [busy, setBusy] = useState(false);
+  const run = async (fn) => { localStorage.setItem(LAST_EMAIL_KEY, f.email.trim()); setBusy(true); setMsg(null); try { const { error, data } = await fn(); if (error) throw error; return data; } catch (e) { setMsg({ k: 'danger', t: e.message }); } finally { setBusy(false); } };
   if (session) return <Card title="You’re signed in"><p>{session.user.email}</p><button className="btn" onClick={() => go('home')}>Continue</button></Card>;
   const email = f.email.trim();
   return (<>

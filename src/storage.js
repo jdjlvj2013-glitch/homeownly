@@ -14,10 +14,43 @@ export const STATE_KEY = 'homekeep-state-v1';
 // PKCE flow: the auth redirect comes back as ?code=… in the query string, so it never
 // collides with the app's #/ hash routes on GitHub Pages.
 export const supabase = createClient(SUPABASE.url, SUPABASE.key, {
-  auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true, autoRefreshToken: true },
+  auth: { flowType: 'pkce', detectSessionInUrl: false, persistSession: true, autoRefreshToken: true },
 });
 // Where magic links / confirmation emails return to: the app root on the current path (e.g. /homeownly/).
-export const redirectUrl = () => location.origin + location.pathname;
+export const PAGES_URL = 'https://jdjlvj2013-glitch.github.io/homeownly/';
+export const redirectUrl = () => (import.meta.env.PROD && location.hostname.endsWith('github.io') ? PAGES_URL : location.origin + location.pathname);
+export const LAST_EMAIL_KEY = 'homeownly-last-auth-email';
+
+// Auth callback: runs once in main.jsx BEFORE the app renders, routes, or seeds demo data.
+// Handles ?code= (PKCE), ?token_hash=&type= (verifyOtp — works in any browser), #access_token= (implicit),
+// and ?error= / #error=. Always cleans the URL. Returns { status, email?, message? }.
+export async function handleAuthCallback() {
+  const q = new URLSearchParams(location.search);
+  const h = new URLSearchParams(location.hash.replace(/^#\/?\??/, ''));
+  const get = (k) => q.get(k) || h.get(k);
+  const isCallback = ['code', 'token_hash', 'access_token', 'error', 'error_description'].some((k) => get(k));
+  if (!isCallback) return { status: 'none' };
+  const remembered = localStorage.getItem(LAST_EMAIL_KEY) || '';
+  let res;
+  try {
+    if (get('error') || get('error_description')) {
+      res = { status: 'error', email: remembered, message: (get('error_description') || get('error')).replace(/\+/g, ' ') };
+    } else if (get('token_hash')) {
+      const { data, error } = await supabase.auth.verifyOtp({ token_hash: get('token_hash'), type: get('type') || 'email' });
+      res = error ? { status: 'error', email: remembered, message: error.message } : { status: 'signed-in', email: data.user?.email };
+    } else if (get('access_token') && get('refresh_token')) {
+      const { data, error } = await supabase.auth.setSession({ access_token: get('access_token'), refresh_token: get('refresh_token') });
+      res = error ? { status: 'error', email: remembered, message: error.message } : { status: 'signed-in', email: data.user?.email };
+    } else if (get('code')) {
+      const { data, error } = await supabase.auth.exchangeCodeForSession(get('code'));
+      // Missing PKCE verifier = link opened in another browser (e.g. the mail app). Supabase has already
+      // confirmed the email when it redirected here, so the user just needs to sign in.
+      res = error ? { status: 'confirmed-signin', email: remembered, message: error.message } : { status: 'signed-in', email: data.user?.email };
+    }
+  } catch (e) { res = { status: 'confirmed-signin', email: remembered, message: e.message }; }
+  history.replaceState(null, '', location.pathname + (res.status === 'signed-in' ? '#/home' : '#/auth'));
+  return res || { status: 'none' };
+}
 
 // Missing table → friendly "setup not finished" message.
 export class SetupMissing extends Error {}

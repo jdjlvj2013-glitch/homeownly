@@ -3,7 +3,7 @@
 .app{max-width:520px;margin:0 auto;min-height:100vh;padding-bottom:84px}
 .top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;background:var(--b);color:#fff;padding:14px 16px;min-height:56px}
 .top h1{font-size:19px;margin:0;flex:1;font-weight:650}.logo{width:32px;height:32px;border-radius:8px;display:block}.back{background:none;border:0;color:#fff;font-size:32px;line-height:1;padding:0 8px 0 0;min-width:44px;min-height:44px;text-align:left}
-.demo{background:#fff4d6;color:#7a5600;font-size:12px;font-weight:700;text-align:center;padding:5px;letter-spacing:.3px}
+.demo{background:#ffe08a;color:#5a3d00;font-size:13px;border-bottom:2px solid #e0a800;font-weight:700;text-align:center;padding:5px;letter-spacing:.3px}
 .trial{background:#e8f4ec;color:var(--ok);font-size:13px;font-weight:600;padding:8px 12px;border-radius:10px;margin-bottom:12px}
 main{padding:14px}.hello{font-size:22px;font-weight:700;margin:4px 2px 12px}
 .card{background:#FFFDF8;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(70,50,15,.08)}.card.tap{cursor:pointer}.card.tap:active{background:#FCEFD9}
@@ -73,3 +73,4 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left
 .herologo{width:200px;height:200px;display:block;margin:0 auto 4px}
 .hero{padding-top:16px}
 .top h1{color:#fff}
+.demo a{color:#5a3d00;text-decoration:underline}
