@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { APP_NAME, PRICING, FILTER_PARTNER, CATEGORIES, REFERRAL } from './config.js';
-import { backend, STATE_KEY } from './storage.js';
+import { backend, STATE_KEY, supabase, cloud, redirectUrl, SetupMissing } from './storage.js';
 import { makeSeed, makeEmpty, uid } from './seed.js';
-import { parseTag, makeSnapshot, decodeSnapshot, unitUrl, PART_RE } from './unit.js';
+import { parseTag, makeSnapshot, decodeSnapshot, unitUrl, liveUnitUrl, PART_RE } from './unit.js';
 import QRCode from 'qrcode';
 import { BRANDS, decodeSerial, decodeTonnage, estimateRefrigerant } from './decode.js';
 import { costStats, VISIT_TYPES, MIN_FOR_TYPICAL, SYMPTOMS, symptom, unlockStatus, historyInsights } from './insights.js';
@@ -13,7 +13,7 @@ const TABS = [['home', 'Home', '⌂'], ['equipment', 'Equipment', '⚙'], ['log'
 const TITLES = { home: APP_NAME, equipment: 'My Equipment', nameplate: 'Nameplate Lookup', log: 'Service Log', addlog: 'Add Service',
   filter: 'Air Filter', agreement: 'Maintenance Agreement', plus: `${APP_NAME} Plus`, bills: 'Power Bill & Comfort', reorder: 'Filter Reorder',
   beforecall: 'Thinking About a Call?', tips: 'Power Bill & Comfort', warranty: 'Warranty Tracker', homes: 'Homes & Equipment',
-  report: 'Service History Report', replace: 'Replacement Planning', settings: 'Account', company: 'Company', callhelper: 'Thinking About a Call?', insights: 'What Might Be Going On', signup: 'Create Account', scan: 'Scan the Data Tag', qr: 'Unit QR Label', unit: 'Unit History', paywall: `${APP_NAME} Plus` };
+  report: 'Service History Report', replace: 'Replacement Planning', settings: 'Account', company: 'Company', callhelper: 'Thinking About a Call?', insights: 'What Might Be Going On', signup: 'Create Account', auth: 'Sign In', scan: 'Scan the Data Tag', qr: 'Unit QR Label', unit: 'Unit History', paywall: `${APP_NAME} Plus` };
 
 const parseHash = () => { const [s, p] = location.hash.replace(/^#\/?/, '').split('/'); return { screen: s || 'home', param: p }; };
 
@@ -28,16 +28,56 @@ export default function App() {
     else if (!s && parseHash().screen === 'unit') s = null; else s = s || makeSeed();
     setSt(s); setLoaded(true); }); }, []);
   useEffect(() => { if (st) backend.save(STATE_KEY, st); }, [st]);
+  // ---- Accounts + cloud sync ----
+  const [session, setSession] = useState(null);
+  const [sync, setSync] = useState({ status: 'off' }); // off | loading | ok | saving | error | setup | ask
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+      if (/[?&](code|error)=/.test(location.search)) history.replaceState(null, '', location.pathname + (location.hash || '#/home'));
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  const userId = session?.user?.id;
+  useEffect(() => { if (!userId || !loaded) { setSync({ status: 'off' }); return; }
+    let dead = false; setSync({ status: 'loading' });
+    const email = session.user.email;
+    const own = (s) => { s = structuredClone(s); s.user = { ...s.user, email: s.user?.email || email, signedUp: true }; return s; };
+    cloud.load(userId).then((row) => { if (dead) return;
+      if (row?.data && Object.keys(row.data).length) { setSt(own(row.data)); setSync({ status: 'ok', at: row.updated_at }); return; }
+      const local = JSON.parse(localStorage.getItem(STATE_KEY) || 'null');
+      const hasLocal = local && !local.demo && (local.equipment?.some((e) => e.model || e.serial) || local.services?.length);
+      if (hasLocal) setSync({ status: 'ask', local });
+      else { const e = own(makeEmpty()); setSt(e); cloud.save(userId, e).then(() => setSync({ status: 'ok' }), fail); }
+    }, fail);
+    function fail(e) { if (!dead) setSync({ status: e instanceof SetupMissing ? 'setup' : 'error', msg: e.message }); }
+    return () => { dead = true; };
+  }, [userId, loaded]);
+  useEffect(() => { if (!userId || !st || !['ok', 'saving', 'error'].includes(sync.status)) return;
+    const t = setTimeout(async () => {
+      setSync((x) => ({ ...x, status: 'saving' }));
+      try {
+        await cloud.save(userId, st);
+        await cloud.shareUnits(userId, st.equipment.filter((e) => e.unitId).map((e) => ({ unit_id: e.unitId, snapshot: { ...makeSnapshot(e, st.services, 50), live: 1 } })));
+        setSync({ status: 'ok', at: new Date().toISOString() });
+      } catch (e) { setSync({ status: e instanceof SetupMissing ? 'setup' : 'error', msg: e.message }); }
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [st, userId, sync.status === 'ask' || sync.status === 'loading' || sync.status === 'setup']);
+  const resolveUpload = (upload) => { const base = upload ? sync.local : makeEmpty(); const s = structuredClone(base); s.user = { ...s.user, email: s.user?.email || session.user.email, signedUp: true };
+    setSt(s); setSync({ status: 'saving' }); cloud.save(userId, s).then(() => setSync({ status: 'ok' }), (e) => setSync({ status: e instanceof SetupMissing ? 'setup' : 'error', msg: e.message })); };
   useEffect(() => { const f = () => { setRoute(parseHash()); window.scrollTo(0, 0); }; addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
   if (!loaded) return null;
   if (route.screen === 'unit') return <UnitPage st={st} up={setSt} param={route.param} />;
+  if (!st && route.screen === 'auth') return <div className="app"><main><Auth ctx={{ session, go: (s) => { location.hash = '/' + s; } }} /></main></div>;
   if (!st) return null;
   const go = (s, p) => { location.hash = `/${s}${p ? '/' + p : ''}`; };
   const up = (fn) => setSt((s) => { const c = structuredClone(s); fn(c); return c; });
   const eq = st.equipment.find((e) => e.id === st.activeEquipmentId) || st.equipment[0];
-  const ctx = { st, up, go, eq, plan: planStatus(st.plan) };
+  const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync };
   let { screen } = route;
-  if (!st.user.signedUp) screen = 'signup';
+  if (!st.user.signedUp && screen !== 'auth') screen = 'signup';
   const S = SCREENS[screen] || Home;
   const gated = PAID.includes(screen);
   const tab = TABS.find(([t]) => t === screen) ? screen : ({ nameplate: 'equipment', addlog: 'log', company: 'log', filter: 'home', agreement: 'home' }[screen] || (gated ? 'plus' : 'home'));
@@ -49,6 +89,10 @@ export default function App() {
         {gated && <span className="pill">PLUS</span>}
       </header>
       {st.demo && screen !== 'signup' && <div className="demo">EXAMPLE DEMO DATA — not a real home</div>}
+      {sync.status === 'setup' && <div className="banner warn">☁️ Cloud setup isn’t finished yet, so your data is only saved on this device for now. (The database tables haven’t been created.)</div>}
+      {sync.status === 'error' && <div className="banner warn">☁️ Couldn’t reach the cloud — changes are saved on this device and will sync when you’re back online.</div>}
+      {sync.status === 'ask' && <div className="banner ok"><b>Welcome!</b> This device already has {APP_NAME} data. Upload it to your account?
+        <div className="two"><button className="btn" onClick={() => resolveUpload(true)}>⬆️ Upload my data</button><button className="btn ghost" onClick={() => { if (confirm('Start with an empty account? Data on this device will be replaced.')) resolveUpload(false); }}>Start empty</button></div></div>}
       <main>{gated ? <Gate ctx={ctx}><S key={screen + (route.param || "")} ctx={ctx} param={route.param} /></Gate> : <S key={screen + (route.param || "")} ctx={ctx} param={route.param} />}</main>
       {screen !== 'signup' && <nav className="tabs">{TABS.map(([t, l, i]) => (
         <button key={t} className={tab === t ? 'on' : ''} onClick={() => go(t)}><span>{i}</span>{l}</button>))}</nav>}
@@ -467,6 +511,10 @@ function Settings({ ctx }) {
   const { st, up, plan } = ctx; const tech = st.techReferralCodes.find((c) => c.code === st.user.referredBy);
   return (<>
     <Card title="Profile"><Row k="Name" v={st.user.name} /><Row k="Email" v={st.user.email} /><Row k="Referred by" v={tech ? `${tech.techName} (${tech.code})` : st.user.referredBy || '—'} /></Card>
+    <Card title="Cloud account">{ctx.session ? <>
+      <Row k="Signed in as" v={ctx.session.user.email} /><Row k="Sync" v={{ ok: 'Saved to cloud ✓', saving: 'Saving…', loading: 'Loading…', ask: 'Waiting for your choice', setup: 'Setup not finished', error: 'Offline — saved on this device' }[ctx.sync.status] || '—'} />
+      <button className="btn ghost" onClick={async () => { await supabase.auth.signOut(); if (confirm('Signed out. Also remove your data from this device?')) { localStorage.removeItem(STATE_KEY); location.hash = '/?fresh=1'; location.reload(); } }}>Sign out</button></>
+      : <><p className="muted">Sign in to back up your data and use it on any device.</p><button className="btn" onClick={() => ctx.go('auth')}>Sign in / create account</button></>}</Card>
     <Card title="Plan"><Row k="Status" v={plan.label} />
       {!st.plan.subscribed && <button className="btn ghost" onClick={() => up((s) => { s.plan.trialStart = new Date(Date.now() - 61 * 864e5).toISOString(); })}>Demo: simulate trial ended</button>}
       <button className="btn ghost" onClick={() => up((s) => { s.plan = { subscribed: false, trialStart: null, interval: null }; })}>Demo: reset to free (no trial)</button></Card>
@@ -475,7 +523,7 @@ function Settings({ ctx }) {
     <button className="btn ghost" onClick={() => { up((s) => { s.user.signedUp = false; }); }}>Demo: view signup screen</button>
     <button className="btn ghost" onClick={() => { if (confirm('Erase everything on this device and start with an empty account?')) startFresh(); }}>🧹 Start fresh (empty account)</button>
     <button className="btn ghost danger" onClick={() => { if (confirm('Replace everything with example demo data?')) { localStorage.clear(); location.hash = '/home'; location.reload(); } }}>Load example demo data</button>
-    <p className="note center">{APP_NAME} prototype · data stays on this device</p>
+    <p className="note center">{APP_NAME} prototype · {ctx.session ? 'synced to your account, cached on this device' : 'data stays on this device'}</p>
   </>);
 }
 
@@ -491,6 +539,7 @@ function Signup({ ctx }) {
       {f.code && <p className={tech ? 'okt' : 'muted'}>{tech ? `✓ Referred by ${tech.techName}` : 'Code will be saved as entered.'}</p>}
       <button className="btn" onClick={() => { up((s) => { s.user = { name: f.name, email: f.email, referredBy: f.code.trim().toUpperCase(), signedUp: true }; }); go(st.demo ? 'home' : 'nameplate'); }}>Get started — it’s free</button>
     </Card>
+    <button className="link" onClick={() => go('auth')}>Already have an account? Sign in ›</button>
     {st.demo ? <button className="btn ghost" onClick={startFresh}>🧹 Start fresh (empty account)</button>
       : <button className="btn ghost" onClick={() => { localStorage.clear(); location.hash = '/home'; location.reload(); }}>👀 Explore with example demo data</button>}
   </>);
@@ -498,7 +547,29 @@ function Signup({ ctx }) {
 
 const SCREENS = { scan: TagScan, qr: QrLabel, home: Home, equipment: Equipment, nameplate: Nameplate, log: Log, addlog: AddLog, filter: Filter, agreement: Agreement, plus: Plus,
   bills: Bills, reorder: Reorder, beforecall: CallHelper, tips: Bills, warranty: Warranty, homes: Homes, report: Report, replace: Replace,
-  company: Company, callhelper: CallHelper, insights: Insights, settings: Settings, signup: Signup, paywall: Paywall };
+  company: Company, callhelper: CallHelper, insights: Insights, settings: Settings, signup: Signup, paywall: Paywall, auth: Auth };
+
+/* ---------------- SIGN IN (magic link or email + password) ---------------- */
+function Auth({ ctx }) {
+  const { session, go } = ctx; const [f, setF] = useState({ email: '', pw: '' }); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const run = async (fn) => { setBusy(true); setMsg(null); try { const { error, data } = await fn(); if (error) throw error; return data; } catch (e) { setMsg({ k: 'danger', t: e.message }); } finally { setBusy(false); } };
+  if (session) return <Card title="You’re signed in"><p>{session.user.email}</p><button className="btn" onClick={() => go('home')}>Continue</button></Card>;
+  const email = f.email.trim();
+  return (<>
+    <Card title="Sign in or create an account">
+      <Field label="Email"><input type="email" autoComplete="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
+      <button className="btn" disabled={busy || !email} onClick={async () => { if (await run(() => supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: redirectUrl() } })) !== undefined) setMsg({ k: 'ok', t: `Check ${email} for a sign-in link. Open it on this device.` }); }}>✉️ Email me a sign-in link</button>
+      <p className="muted small center">— or use a password —</p>
+      <Field label="Password (8+ characters)"><input type="password" autoComplete="current-password" value={f.pw} onChange={(e) => setF({ ...f, pw: e.target.value })} /></Field>
+      <div className="two">
+        <button className="btn ghost" disabled={busy || !email || f.pw.length < 8} onClick={async () => { const d = await run(() => supabase.auth.signInWithPassword({ email, password: f.pw })); if (d?.session) go('home'); }}>Sign in</button>
+        <button className="btn ghost" disabled={busy || !email || f.pw.length < 8} onClick={async () => { const d = await run(() => supabase.auth.signUp({ email, password: f.pw, options: { emailRedirectTo: redirectUrl() } })); if (d) { if (d.session) go('home'); else setMsg({ k: 'ok', t: `Almost done — confirm your email from the link we sent to ${email}.` }); } }}>Create account</button>
+      </div>
+      {msg && <div className={'banner ' + msg.k}>{msg.t}</div>}
+    </Card>
+    <p className="note center">No account needed to try {APP_NAME} — <a href="#/home">keep using it on this device</a>.</p>
+  </>);
+}
 
 function startFresh() { localStorage.setItem(STATE_KEY, JSON.stringify(makeEmpty())); location.hash = '/signup'; location.reload(); }
 
@@ -546,7 +617,8 @@ const MONTHS_S = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','N
 function QrLabel({ ctx, param }) {
   const { st, up } = ctx; const e = st.equipment.find((x) => x.id === param) || ctx.eq; const [svg, setSvg] = useState(''); const [png, setPng] = useState('');
   useEffect(() => { if (!e.unitId) up((s) => { s.equipment.find((x) => x.id === e.id).unitId = 'U' + uid() + uid(); }); }, [e.id]);
-  const snap = e.unitId ? makeSnapshot(e, st.services) : null; const url = snap ? unitUrl(snap) : '';
+  const live = !!ctx.session && ['ok', 'saving'].includes(ctx.sync.status);
+  const snap = e.unitId ? makeSnapshot(e, st.services) : null; const url = snap ? (live ? liveUnitUrl(e.unitId) : unitUrl(snap)) : '';
   useEffect(() => { if (url) { QRCode.toString(url, { type: 'svg', errorCorrectionLevel: 'L', margin: 1 }).then(setSvg); QRCode.toDataURL(url, { errorCorrectionLevel: 'L', margin: 2, width: 900 }).then(setPng); } }, [url]);
   if (!snap) return null; const { d } = eqInfo(e);
   return (<>
@@ -554,29 +626,36 @@ function QrLabel({ ctx, param }) {
       <div className="qrhead">⌂ {APP_NAME} · Unit history</div>
       <div className="qr" dangerouslySetInnerHTML={{ __html: svg }} />
       <p className="qrsub"><b>{BRANDS.find((b) => b.id === e.brand)?.label.split(' /')[0]}</b> · {e.model}<br />S/N {e.serial}{d.ok ? ` · built ~${d.year}` : ''}</p>
-      <p className="qrnote">Scan for this unit’s service history · Data as of {fmtDate(snap.a)}</p>
+      <p className="qrnote">Scan for this unit’s service history{live ? '' : ` · Data as of ${fmtDate(snap.a)}`}</p>
     </div>
     <div className="two noprint"><button className="btn" onClick={() => window.print()}>🖨️ Print</button><a className="btn ghost" href={png} download={`homeownly-unit-${e.unitId}.png`}>⬇️ Download</a></div>
     <Card><p>📌 <b>Stick this on your unit</b> (outdoor unit side panel or near the indoor unit) so any tech can see the history.</p>
-      <p className="muted small">The label holds a snapshot of the {snap.h.length} most recent visits, as of today. <b>Reprint it after new service visits</b> so it stays current.</p>
+      {live ? <p className="muted small">✓ Live label — scanning it always shows the latest history from your account. No need to reprint.</p>
+        : <p className="muted small">The label holds a snapshot of the {snap.h.length} most recent visits, as of today. <b>Reprint it after new service visits</b> so it stays current. <button className="link" onClick={() => ctx.go('auth')}>Sign in for a live label that updates itself ›</button></p>}
       <p className="muted small">Techs see equipment info and service history only — never your name, address, costs or notes.</p>
-      <p className="muted small">Link length: {url.length} characters.</p></Card>
+      {!live && <p className="muted small">Link length: {url.length} characters.</p>}</Card>
   </>);
 }
 
 /* ---------------- #/unit (read-only, outside the app shell) ---------------- */
 function UnitPage({ st, up, param }) {
-  const snap = decodeSnapshot(param || '');
-  const mine = snap && st?.equipment.find((e) => e.unitId && e.unitId === snap.u);
+  const legacy = decodeSnapshot(param || ''); const isLegacy = !!(legacy && legacy.u);
+  const [remote, setRemote] = useState(isLegacy ? null : 'loading');
+  useEffect(() => { if (isLegacy || !param) return; cloud.getUnit(param).then((r) => setRemote(r ? { ...r.snapshot, a: r.updated_at.slice(0, 10) } : 'none'), (e) => setRemote(e instanceof SetupMissing ? 'setup' : 'error')); }, [param]);
+  const snap = isLegacy ? legacy : (typeof remote === 'object' ? remote : null);
+  const unitId = isLegacy ? legacy.u : param;
+  const mine = unitId && st?.equipment.find((e) => e.unitId && e.unitId === unitId);
   useEffect(() => { if (mine && st.user.signedUp) { up((s) => ({ ...s, activeEquipmentId: mine.id })); location.replace('#/log'); } }, []);
   if (mine && st.user.signedUp) return null;
   const app = location.pathname;
-  if (!snap) return <div className="app"><header className="top"><img className="logo" src={import.meta.env.BASE_URL + 'icon-192.png'} alt="" width="32" height="32" /><h1>Unit History</h1></header><main><Card><p>This label couldn’t be read. Ask the owner to reprint it.</p></Card></main></div>;
+  if (!snap) return <div className="app"><header className="top"><img className="logo" src={import.meta.env.BASE_URL + 'icon-192.png'} alt="" width="32" height="32" /><h1>Unit History</h1></header><main><Card><p>{
+    { loading: 'Looking up this unit…', setup: 'Unit lookup isn’t set up yet. Please try again later.', error: 'Couldn’t reach the server. Check your connection and try again.', none: 'No history has been shared for this unit yet.' }[remote] || 'This label couldn’t be read. Ask the owner to reprint it.'}</p></Card></main></div>;
   const d = decodeSerial(snap.b, snap.s); const t = decodeTonnage(snap.m); const age = Math.floor((Date.now() - new Date(snap.a + 'T12:00')) / 864e5);
   const parts = [...new Set(snap.h.flatMap(([, w]) => (w.match(PART_RE) || []).map((p) => p.toLowerCase())))];
   return (<div className="app"><header className="top"><img className="logo" src={import.meta.env.BASE_URL + 'icon-192.png'} alt="" width="32" height="32" /><h1>Unit History</h1><span className="pill">READ-ONLY</span></header>
     <main>
-      <div className={'banner ' + (age > 90 ? 'warn' : 'ok')}>Data as of <b>{fmtDate(snap.a)}</b>{age > 90 ? ` (${Math.floor(age / 30)} months ago) — newer visits may not be shown.` : '.'}</div>
+      {snap.live ? <div className="banner ok">Live history · last updated <b>{fmtDate(snap.a)}</b>.</div>
+        : <div className={'banner ' + (age > 90 ? 'warn' : 'ok')}>Data as of <b>{fmtDate(snap.a)}</b>{age > 90 ? ` (${Math.floor(age / 30)} months ago) — newer visits may not be shown.` : '.'}</div>}
       <Card title="Equipment">
         <Row k="Brand" v={BRANDS.find((b) => b.id === snap.b)?.label || '—'} /><Row k="Model" v={snap.m || '—'} /><Row k="Serial" v={snap.s || '—'} />
         <Row k="Built (est.)" v={d.ok ? `${MONTHS_S[d.month - 1]} ${d.year}` : '—'} /><Row k="Age (est.)" v={d.ok ? `about ${Math.floor(d.ageYears)} years` : '—'} />

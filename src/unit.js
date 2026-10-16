@@ -16,17 +16,18 @@ export function parseTag(text) {
 }
 
 // ---- Unit QR snapshot ----
-// NOTE: no backend yet, so the QR URL carries a compact snapshot of the unit history.
-// TODO(Supabase): replace with a short URL #/unit/<unitId> that looks the unit up server-side (read-only view).
+// Live labels encode #/unit/<unitId> and are looked up in Supabase (unit_shares).
+// Older labels encode a base64 snapshot in the URL; both still open.
 // Privacy: never include owner name, address, costs or notes.
 const b64 = (s) => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64 = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)));
 export const PART_RE = /(capacitor|contactor|igniter|ignitor|flame sensor|blower motor|motor|coil|drain line|float switch|filter|compressor|txv|thermostat|board|relay)/gi;
-export function makeSnapshot(eq, services) {
-  const sv = services.filter((s) => s.equipmentId === eq.id).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 12); // keep the QR scannable
+export function makeSnapshot(eq, services, max = 12) {
+  const sv = services.filter((s) => s.equipmentId === eq.id).sort((a, b) => b.date.localeCompare(a.date)).slice(0, max); // keep the QR scannable
   return { v: 1, u: eq.unitId, a: new Date().toLocaleDateString('en-CA'), b: eq.brand, m: eq.model, s: eq.serial, i: eq.installDate || '',
     h: sv.map((x) => [x.date, x.work.slice(0, 60), x.company]), n: services.filter((s) => s.equipmentId === eq.id).length };
 }
 export const encodeSnapshot = (o) => b64(JSON.stringify(o));
 export function decodeSnapshot(str) { try { return JSON.parse(unb64(str)); } catch { return null; } }
+export const liveUnitUrl = (unitId) => `${location.origin}${location.pathname}#/unit/${unitId}`;
 export const unitUrl = (snap) => `${location.origin}${location.pathname}#/unit/${encodeSnapshot(snap)}`;

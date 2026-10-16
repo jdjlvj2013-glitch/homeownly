@@ -17,3 +17,8 @@ export const CATEGORIES = {
   roof: { label: 'Roof', icon: '🏠', enabled: false },
   appliance: { label: 'Appliances', icon: '🧺', enabled: false },
 };
+// Supabase (client-safe publishable key; access is enforced by row level security — see supabase/setup.sql)
+export const SUPABASE = {
+  url: import.meta.env.VITE_SUPABASE_URL || 'https://rmmkvekvwhpklqtgxffe.supabase.co',
+  key: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_Ri2He1kbylkUjZB-KlteQA_gbHdhVkK',
+};
