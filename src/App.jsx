@@ -44,7 +44,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="top">
-        {!TABS.find(([t]) => t === screen) && screen !== 'signup' ? <button className="back" onClick={() => history.back()} aria-label="Back">‹</button> : <span className="logo">⌂</span>}
+        {!TABS.find(([t]) => t === screen) && screen !== 'signup' ? <button className="back" onClick={() => history.back()} aria-label="Back">‹</button> : <img className="logo" src={import.meta.env.BASE_URL + 'icon-192.png'} alt="" width="32" height="32" />}
         <h1>{TITLES[screen] || APP_NAME}</h1>
         {gated && <span className="pill">PLUS</span>}
       </header>
@@ -483,7 +483,7 @@ function Signup({ ctx }) {
   const { st, up, go } = ctx; const [f, setF] = useState({ name: st.user.name, email: st.user.email, code: st.user.referredBy || '' });
   const tech = st.techReferralCodes.find((c) => c.code === f.code.trim().toUpperCase());
   return (<>
-    <div className="hero"><div className="logo big">⌂</div><h2>{APP_NAME}</h2><p>Keep your home’s equipment, service history and reminders in one place.</p></div>
+    <div className="hero"><img className="herologo" src={import.meta.env.BASE_URL + 'logo.png'} alt={APP_NAME} width="200" height="200" /><p>Keep your home’s equipment, service history and reminders in one place.</p></div>
     <Card>
       <Field label="Name"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
       <Field label="Email"><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
@@ -571,10 +571,10 @@ function UnitPage({ st, up, param }) {
   useEffect(() => { if (mine && st.user.signedUp) { up((s) => ({ ...s, activeEquipmentId: mine.id })); location.replace('#/log'); } }, []);
   if (mine && st.user.signedUp) return null;
   const app = location.pathname;
-  if (!snap) return <div className="app"><header className="top"><span className="logo">⌂</span><h1>Unit History</h1></header><main><Card><p>This label couldn’t be read. Ask the owner to reprint it.</p></Card></main></div>;
+  if (!snap) return <div className="app"><header className="top"><img className="logo" src={import.meta.env.BASE_URL + 'icon-192.png'} alt="" width="32" height="32" /><h1>Unit History</h1></header><main><Card><p>This label couldn’t be read. Ask the owner to reprint it.</p></Card></main></div>;
   const d = decodeSerial(snap.b, snap.s); const t = decodeTonnage(snap.m); const age = Math.floor((Date.now() - new Date(snap.a + 'T12:00')) / 864e5);
   const parts = [...new Set(snap.h.flatMap(([, w]) => (w.match(PART_RE) || []).map((p) => p.toLowerCase())))];
-  return (<div className="app"><header className="top"><span className="logo">⌂</span><h1>Unit History</h1><span className="pill">READ-ONLY</span></header>
+  return (<div className="app"><header className="top"><img className="logo" src={import.meta.env.BASE_URL + 'icon-192.png'} alt="" width="32" height="32" /><h1>Unit History</h1><span className="pill">READ-ONLY</span></header>
     <main>
       <div className={'banner ' + (age > 90 ? 'warn' : 'ok')}>Data as of <b>{fmtDate(snap.a)}</b>{age > 90 ? ` (${Math.floor(age / 30)} months ago) — newer visits may not be shown.` : '.'}</div>
       <Card title="Equipment">
