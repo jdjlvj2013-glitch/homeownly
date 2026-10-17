@@ -7,8 +7,11 @@ export const FILTER_PARTNER = {
   urlPattern: 'https://example-filters.com/search?size={size}&ref={ref}',
   affiliateRef: 'HOMEOWNLY-DEMO',
 };
-// Tech referral: commission placeholder for later ($ per paid signup)
-export const REFERRAL = { commissionPerPaidSignup: 5, enabled: false };
+// Customer referral codes (from a tech). Format like the existing tech codes, e.g. JSIMS-WM.
+// A valid code gives 50% off the FIRST MONTH of the monthly plan only (not the yearly plan).
+// No payments yet: we only store the flag on the account (plan.referralDiscount).
+// TODO(Stripe): apply plan.referralDiscount as a one-time 50%-off coupon on the first monthly invoice.
+export const REFERRAL = { discountPct: 50, appliesTo: 'monthly_first_month', codeRe: /^[A-Z0-9]{2,12}-[A-Z0-9]{2,6}$/ };
 // Equipment categories. HVAC is the first; add plumbing, water heater, roof, appliances later.
 export const CATEGORIES = {
   hvac: { label: 'Heating & Cooling', icon: '❄️', enabled: true },

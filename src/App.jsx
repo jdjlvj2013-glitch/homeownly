@@ -15,10 +15,23 @@ const TITLES = { home: APP_NAME, equipment: 'My Equipment', nameplate: 'Nameplat
   beforecall: 'Thinking About a Call?', tips: 'Power Bill & Comfort', warranty: 'Warranty Tracker', homes: 'Homes & Equipment',
   report: 'Service History Report', replace: 'Replacement Planning', settings: 'Account', company: 'Company', callhelper: 'Thinking About a Call?', insights: 'What Might Be Going On', signup: 'Create Account', auth: 'Sign In', scan: 'Scan the Data Tag', qr: 'Unit QR Label', unit: 'Unit History', paywall: `${APP_NAME} Plus` };
 
-// Hidden developer toggle: ?dev=1 (or #/?dev=1) turns it on for this device, ?dev=0 turns it off.
-const DEV_KEY = 'homeownly-dev';
-{ const m = (location.search + location.hash).match(/[?&]dev=([01])/); if (m) m[1] === '1' ? localStorage.setItem(DEV_KEY, '1') : localStorage.removeItem(DEV_KEY); }
-const isDev = () => localStorage.getItem(DEV_KEY) === '1';
+// Developer mode: unlocked per device with a password (Account tab > "Developer mode").
+// Only the SHA-256 hash is stored here. The old ?dev=1 flag ('homeownly-dev') is cleared for everyone.
+localStorage.removeItem('homeownly-dev');
+const DEV_KEY = 'homeownly-dev-v2';
+const DEV_HASH = '0b7a36a66b7ece620f6afcb8a0537c3b72e84b92745ee6e22e1ea4448cf46d34';
+const isDev = () => localStorage.getItem(DEV_KEY) === DEV_HASH;
+async function unlockDev(pw) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+  const hex = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  if (hex !== DEV_HASH) return false; localStorage.setItem(DEV_KEY, hex); return true;
+}
+// Referral code → 50% off first monthly payment (flag only; Stripe coupon later).
+const normCode = (c) => (c || '').trim().toUpperCase();
+const validCode = (c) => REFERRAL.codeRe.test(normCode(c));
+const applyCode = (s, c) => { const code = normCode(c); if (!validCode(code)) return false;
+  s.user.referredBy = code; s.plan.referralDiscount = { code, pct: REFERRAL.discountPct, appliesTo: REFERRAL.appliesTo, used: false }; return true; };
+const CODE_MSG = `Code applied: ${REFERRAL.discountPct}% off your first month`;
 // Real accounts: 2-month trial counted from account creation, unless a dev control set it on purpose.
 const realTrial = (s, user) => { if (!s.plan.subscribed && s.plan.trialSet !== 'dev' && user?.created_at) s.plan = { ...s.plan, trialStart: user.created_at }; return s; };
 const parseHash = () => { const [s, p] = location.hash.replace(/^#\/?/, '').split('/'); return { screen: s || 'home', param: p }; };
@@ -85,7 +98,7 @@ export default function App({ authResult = { status: 'none' } }) {
   const go = (s, p) => { location.hash = `/${s}${p ? '/' + p : ''}`; };
   const up = (fn) => setSt((s) => { const c = structuredClone(s); fn(c); return c; });
   const eq = st.equipment.find((e) => e.id === st.activeEquipmentId) || st.equipment[0];
-  const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync, authResult, dev: !!st.demo || isDev() };
+  const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync, authResult, dev: isDev(), examples: !!st.demo || isDev() };
   let { screen } = route;
   if (!st.user.signedUp && screen !== 'auth') screen = 'signup';
   if (session && screen === 'signup') screen = 'home';
@@ -382,26 +395,31 @@ function Agreement({ ctx }) {
 
 /* ---------------- PLUS ---------------- */
 function Plus({ ctx }) {
-  const { go, plan } = ctx;
+  const { go, plan, st } = ctx;
   const items = [['callhelper', '☎️', 'Thinking about a call?', 'Safety checks, owner’s-manual checks, your costs & perks, and what your history suggests — one flow'],
     ['bills', '⚡', 'Power bill & comfort', 'Spot unusual bill jumps, plus thermostat tips'], ['reorder', '🛒', 'Filter auto-ship', 'Right size, delivered on schedule'],
     ['warranty', '🛡️', 'Warranty tracker', 'End date & registration reminder'], ['replace', '🗓️', 'Replacement planning', 'Plan and budget ahead by system age'],
     ['homes', '🏘️', 'Multiple homes & equipment', 'Track every system you own'], ['report', '📄', 'Home-sale history report', 'Printable / PDF service record'],
     ['log', '💵', 'Your typical costs', 'Per-company costs from your own records']];
   return (<>
-    <Card><p className="center"><b>{plan.label}</b></p><p className="center muted">{plan.notStarted ? `Your ${PRICING.trialDays / 30}-month free trial starts the first time you open a Plus feature.` : `${money(PRICING.monthly)}/mo or ${money(PRICING.yearly)}/yr`}</p></Card>
+    <Card><p className="center"><b>{plan.label}</b></p><p className="center muted">{plan.notStarted ? `Your ${PRICING.trialDays / 30}-month free trial starts the first time you open a Plus feature.` : `${money(PRICING.monthly)}/mo or ${money(PRICING.yearly)}/yr`}</p>
+      {st.plan.referralDiscount && !st.plan.subscribed && <p className="center okt">🎉 {CODE_MSG} — {money(PRICING.monthly * (1 - st.plan.referralDiscount.pct / 100))} first month, then {money(PRICING.monthly)}/mo</p>}</Card>
     {items.map(([k, i, t, d]) => <Card key={k} onClick={() => go(k)}><div className="rem"><span>{i}</span><div><b>{t}</b><small>{d}</small></div><span className="chev">›</span></div></Card>)}
   </>);
 }
 
 function Paywall({ ctx }) {
-  const { up } = ctx; const sub = (i) => up((s) => { s.plan.subscribed = true; s.plan.interval = i; });
+  const { st, up, plan } = ctx; const sub = (i) => up((s) => { s.plan.subscribed = true; s.plan.interval = i; if (i === 'monthly' && s.plan.referralDiscount) s.plan.referralDiscount.used = true; });
+  const disc = st.plan.referralDiscount && !st.plan.referralDiscount.used ? st.plan.referralDiscount : null;
+  const first = disc ? PRICING.monthly * (1 - disc.pct / 100) : null;
   return (<Card>
-    <div className="big">★</div><h2 className="center">Your free trial has ended</h2>
+    <div className="big">★</div><h2 className="center">{plan.expired ? 'Your free trial has ended' : `Upgrade to ${APP_NAME} Plus`}</h2>
     <p className="center muted">Keep Power Bill Check, warranty tracking, multi-home, reports and more.</p>
-    <button className="btn" onClick={() => sub('yearly')}>{money(PRICING.yearly)} / year <small>(save 35%)</small></button>
-    <button className="btn ghost" onClick={() => sub('monthly')}>{money(PRICING.monthly)} / month</button>
-    {ctx.dev && <p className="note">Demo: no real payment is taken.</p>}
+    {disc && <div className="banner ok center">🎉 <b>{CODE_MSG}</b> (code {disc.code})</div>}
+    <button className="btn" onClick={() => sub('monthly')}>{disc ? <>{money(first)} first month, then {money(PRICING.monthly)}/mo</> : <>{money(PRICING.monthly)} / month</>}</button>
+    <button className="btn ghost" onClick={() => sub('yearly')}>{money(PRICING.yearly)} / year <small>(save 35%)</small></button>
+    {disc && <p className="muted small center">The referral discount applies to the monthly plan only.</p>}
+    {ctx.examples && <p className="note">Demo: no real payment is taken.</p>}
   </Card>);
 }
 
@@ -430,7 +448,7 @@ function Reorder({ ctx }) {
   const { eq } = ctx; const url = filterUrl(eq.filterSize);
   return (<Card><div className="big">{eq.filterSize}</div><p className="center muted">Exact size for “{eq.name}” · every {eq.filterMonths} months</p>
     <a className="btn" href={url} target="_blank" rel="noopener sponsored">Reorder / Auto-ship</a>
-    {ctx.dev && <p className="note">Partner: {FILTER_PARTNER.name}. Link: <code>{url}</code></p>}
+    {ctx.examples && <p className="note">Partner: {FILTER_PARTNER.name}. Link: <code>{url}</code></p>}
     <p className="muted">Double-check the size printed on the edge of your current filter before ordering.</p></Card>);
 }
 
@@ -519,25 +537,29 @@ function Replace({ ctx }) {
 
 /* ---------------- COSTS / CALL HELPER / INSIGHTS (PLUS) ---------------- */
 function Settings({ ctx }) {
-  const { st, up, plan } = ctx; const tech = st.techReferralCodes.find((c) => c.code === st.user.referredBy);
+  const { st, up, plan } = ctx; const [devPrompt, setDevPrompt] = useState(false); const [pw, setPw] = useState(''); const [pwErr, setPwErr] = useState('');
   return (<>
-    <Card title="Profile"><Row k="Name" v={st.user.name} /><Row k="Email" v={st.user.email} />{st.user.referredBy && <Row k="Referred by" v={tech ? `${tech.techName} (${tech.code})` : st.user.referredBy} />}</Card>
+    <Card title="Profile"><Row k="Name" v={st.user.name} /><Row k="Email" v={st.user.email} />{st.user.referredBy && <Row k="Referral code" v={st.user.referredBy} />}</Card>
     <Card title="Cloud account">{ctx.session ? <>
       <Row k="Signed in as" v={ctx.session.user.email} /><Row k="Sync" v={{ ok: 'Saved to cloud ✓', saving: 'Saving…', loading: 'Loading…', ask: 'Waiting for your choice', setup: 'Setup not finished', error: 'Offline — saved on this device' }[ctx.sync.status] || '—'} />
       <button className="btn ghost" onClick={async () => { await supabase.auth.signOut(); if (confirm('Signed out. Also remove your data from this device?')) { localStorage.removeItem(STATE_KEY); location.hash = '/?fresh=1'; location.reload(); } }}>Sign out</button></>
       : <><p className="muted">Sign in to back up your data and use it on any device.</p><button className="btn" onClick={() => ctx.go('auth')}>Sign in / create account</button></>}</Card>
     <Card title="Plan"><Row k="Status" v={plan.label} />
       {plan.trial && <p className="muted small">Your free trial of {APP_NAME} Plus ends in {plan.daysLeft} days.</p>}
+      {st.plan.referralDiscount && !st.plan.subscribed && <p className="okt small">✓ {CODE_MSG} (monthly plan)</p>}
       {plan.expired && <button className="btn" onClick={() => ctx.go('paywall')}>See {APP_NAME} Plus options</button>}</Card>
-    {ctx.dev ? <Card title="For techs: referral codes"><p className="muted">Share your code; homeowners enter it at signup.{REFERRAL.enabled ? '' : ` (Later: ${money(REFERRAL.commissionPerPaidSignup)} per paid signup.)`}</p>
-      {st.techReferralCodes.map((c) => <Row key={c.code} k={c.techName} v={c.code} />)}</Card>
-      : !st.user.referredBy && <ReferralEntry ctx={ctx} />}
+    {!st.plan.referralDiscount && !st.plan.subscribed && <ReferralEntry ctx={ctx} />}
     {ctx.session && <Card title="Your data"><p className="muted small">Removes your saved home, equipment and history from the cloud and this device, and turns off your unit QR labels.</p>
       <button className="btn ghost danger" onClick={async () => { if (!confirm('Delete all of your HomeOwnly data? This can’t be undone.')) return;
         const uidv = ctx.session.user.id;
         const r1 = await supabase.from('unit_shares').delete().eq('owner', uidv); const r2 = await supabase.from('profiles_state').delete().eq('user_id', uidv);
         if (r1.error || r2.error) { alert('Couldn’t delete right now — check your connection and try again.'); return; }
         localStorage.removeItem(STATE_KEY); await supabase.auth.signOut(); location.hash = '/?fresh=1'; location.reload(); }}>🗑️ Delete my data</button></Card>}
+    {!ctx.dev && (!devPrompt ? <p className="center"><button className="link" style={{ fontSize: 12, fontWeight: 400, color: "#8a8a80" }} onClick={() => setDevPrompt(true)}>Developer mode</button></p>
+      : <Card title="Developer mode"><Field label="Password"><input type="password" autoComplete="off" value={pw} onChange={(e) => { setPw(e.target.value); setPwErr(''); }} /></Field>
+        {pwErr && <p className="banner danger">{pwErr}</p>}
+        <div className="two"><button className="btn" disabled={!pw} onClick={async () => { if (await unlockDev(pw)) location.reload(); else setPwErr('Wrong password.'); }}>Unlock</button>
+          <button className="btn ghost" onClick={() => { setDevPrompt(false); setPw(''); setPwErr(''); }}>Cancel</button></div></Card>)}
     {ctx.dev && <Card title="🛠 Developer / demo tools">
       {!st.plan.subscribed && <button className="btn ghost" onClick={() => up((s) => { s.plan.trialStart = new Date(Date.now() - 61 * 864e5).toISOString(); s.plan.trialSet = 'dev'; })}>Demo: simulate trial ended</button>}
       <button className="btn ghost" onClick={() => up((s) => { s.plan = { subscribed: false, trialStart: null, interval: null, trialSet: 'dev' }; })}>Demo: reset to free (no trial)</button>
@@ -546,30 +568,30 @@ function Settings({ ctx }) {
       {!ctx.session && <button className="btn ghost" onClick={() => { if (confirm('Erase everything on this device and start with an empty account?')) startFresh(); }}>🧹 Start fresh (empty account)</button>}
       {ctx.session ? <p className="muted small">Sign out to load the example demo (it never replaces your cloud data).</p>
         : <button className="btn ghost danger" onClick={() => { if (confirm('Replace everything on this device with example demo data?')) { localStorage.removeItem(STATE_KEY); location.hash = '/home'; location.reload(); } }}>Load example demo data</button>}
-      {isDev() && <button className="link" onClick={() => { localStorage.removeItem(DEV_KEY); location.reload(); }}>Turn off developer mode</button>}
+      <button className="link" onClick={() => { localStorage.removeItem(DEV_KEY); location.reload(); }}>Turn off developer mode</button>
     </Card>}
     <p className="note center">{ctx.session ? 'Synced to your account · saved on this device for offline use' : 'Saved on this device'}</p>
   </>);
 }
 
 function ReferralEntry({ ctx }) {
-  const { st, up } = ctx; const [code, setCode] = useState('');
-  return (<Card title="Referred by a tech?"><p className="muted small">If a technician gave you a referral code, enter it here.</p>
-    <Field label="Referral code"><input value={code} onChange={(e) => setCode(e.target.value)} autoCapitalize="characters" /></Field>
-    <button className="btn ghost" disabled={!code.trim()} onClick={() => up((s) => { s.user.referredBy = code.trim().toUpperCase(); })}>Save code</button></Card>);
+  const { up } = ctx; const [code, setCode] = useState(''); const [err, setErr] = useState('');
+  return (<Card title="Have a referral code?"><p className="muted small">If your technician gave you a code, enter it for {REFERRAL.discountPct}% off your first month of {APP_NAME} Plus (monthly plan).</p>
+    <Field label="Referral code"><input value={code} onChange={(e) => { setCode(e.target.value); setErr(''); }} autoCapitalize="characters" placeholder="e.g. ABCDE-XY" /></Field>
+    {err && <p className="muted small">{err}</p>}
+    <button className="btn ghost" disabled={!code.trim()} onClick={() => { if (!validCode(code)) { setErr('That code doesn’t look right. Codes look like ABCDE-XY.'); return; } up((s) => { applyCode(s, code); }); }}>Apply code</button></Card>);
 }
 
 function Signup({ ctx }) {
   const { st, up, go } = ctx; const [f, setF] = useState({ name: st.user.name, email: st.user.email, code: st.user.referredBy || '' });
-  const tech = st.techReferralCodes.find((c) => c.code === f.code.trim().toUpperCase());
   return (<>
     <div className="hero"><img className="herologo" src={import.meta.env.BASE_URL + 'logo.png'} alt={APP_NAME} width="200" height="200" /><p>Keep your home’s equipment, service history and reminders in one place.</p></div>
     <Card>
       <Field label="Name"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
       <Field label="Email"><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
       <Field label="Referral code (from your tech, optional)"><input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} autoCapitalize="characters" /></Field>
-      {f.code && <p className={tech ? 'okt' : 'muted'}>{tech ? `✓ Referred by ${tech.techName}` : 'Code will be saved as entered.'}</p>}
-      <button className="btn" onClick={() => { up((s) => { s.user = { name: f.name, email: f.email, referredBy: f.code.trim().toUpperCase(), signedUp: true }; }); go(st.demo ? 'home' : 'nameplate'); }}>Get started — it’s free</button>
+      {f.code.trim() && <p className={validCode(f.code) ? 'okt' : 'muted'}>{validCode(f.code) ? `✓ ${CODE_MSG}` : 'That code doesn’t look right yet. Codes look like ABCDE-XY.'}</p>}
+      <button className="btn" onClick={() => { up((s) => { s.user = { ...s.user, name: f.name, email: f.email, referredBy: '', signedUp: true }; if (f.code.trim()) applyCode(s, f.code); }); go(st.demo ? 'home' : 'nameplate'); }}>Get started — it’s free</button>
     </Card>
     <button className="link" onClick={() => go('auth')}>Already have an account? Sign in ›</button>
     {st.demo ? <button className="btn ghost" onClick={startFresh}>🧹 Start fresh (empty account)</button>
@@ -630,7 +652,7 @@ function TagScan({ ctx, param }) {
     <Card title="Photo of the data tag">
       <p className="muted">The data tag is the metal or sticker label on the side of the outdoor unit (or inside the furnace closet door area). Take the photo from outside the unit — no need to open anything.</p>
       <label className="btn">📷 Take or upload a photo<input type="file" accept="image/*" capture="environment" onChange={file} hidden /></label>
-      {ctx.dev && <button className="btn ghost" onClick={() => read(`${import.meta.env.BASE_URL}example-tag.png`)}>Try with an example tag</button>}
+      {ctx.examples && <button className="btn ghost" onClick={() => read(`${import.meta.env.BASE_URL}example-tag.png`)}>Try with an example tag</button>}
       {img && <img className="tagimg" src={img} alt="Data tag" />}
       {busy > 0 && <p className="muted">Reading the tag… {busy > 1 ? busy + '%' : ''} (runs on your phone, first time may take a moment)</p>}
       {err && <div className="banner warn">{err}</div>}
