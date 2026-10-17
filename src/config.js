@@ -1,7 +1,9 @@
 // ===== Single place to rename / reconfigure the app =====
 export const APP_NAME = 'HomeOwnly';
 export const PRICING = { monthly: 4.99, yearly: 39, trialDays: 60 };
-// Filter affiliate URL builder. Placeholders: {size} e.g. 16x25x1, {w},{h},{d}, {ref}
+// Filter affiliate URL builder. Still a placeholder: swap in the approved partner's tracking link once a program approves you
+// (see /workspace/affiliate/application-notes.md). Ranked first picks: Elite Air Filters (contractor program, pays on recurring
+// orders), Nordic Pure via Awin (5% on all sales, 120-day cookie), Filterbuy (new customers only). Placeholders: {size} e.g. 16x25x1, {w},{h},{d}, {ref}
 export const FILTER_PARTNER = {
   name: 'Example Filter Co. (placeholder)',
   urlPattern: 'https://example-filters.com/search?size={size}&ref={ref}',
@@ -24,4 +26,15 @@ export const CATEGORIES = {
 export const SUPABASE = {
   url: import.meta.env.VITE_SUPABASE_URL || 'https://rmmkvekvwhpklqtgxffe.supabase.co',
   key: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_Ri2He1kbylkUjZB-KlteQA_gbHdhVkK',
+};
+// Legal pages (#/disclosure, #/privacy, #/terms). DRAFT: have a lawyer review before launch.
+export const LEGAL = {
+  business: 'HomeOwnly (Joshua Sims)',
+  owner: 'Joshua Sims',
+  state: 'Louisiana',
+  city: 'West Monroe, Louisiana',
+  // TODO(Joshua): replace with a real support inbox before launch (e.g. support@yourdomain.com).
+  contactEmail: 'TODO-contact@example.com',
+  updated: 'October 16, 2026',
+  draft: true,
 };

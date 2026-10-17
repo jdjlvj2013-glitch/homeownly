@@ -77,3 +77,9 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left
 .taghelp{margin:8px 0}.tagfig{margin:10px 0 4px;text-align:center}.tagfig figcaption{font-size:13.5px;color:var(--m);margin-top:6px;line-height:1.4;text-align:left}
 .unitsec{border-top:1px solid #eadfca;margin-top:12px;padding-top:10px}.toggle{display:flex;gap:10px;align-items:center;font-size:15px;margin:8px 0}.toggle input{width:20px;height:20px}
 .qrtip{background:#e8f4ec;color:#155c39;border-radius:12px;padding:12px 14px;font-size:14.5px;line-height:1.45}
+
+.legal h2{font-size:22px;margin:6px 0 2px}.legal h3{font-size:16.5px;margin:16px 0 4px;color:var(--bd)}.legal p,.legal li{font-size:15px;line-height:1.55}.legal ul{padding-left:20px;margin:4px 0}
+.legal .lead{background:#e8f4ec;color:#155c39;border-radius:12px;padding:12px 14px}.legaldraft{margin-top:0}.todo{color:#b42318}
+.legal .safetyline{border-left:4px solid #b42318;padding-left:10px}
+.commission{font-size:12.5px;color:var(--m);margin:6px 2px 4px;text-align:center}.commission a,.legallinks a,.agree a{color:var(--b)}
+.legallinks{font-size:13px;margin:12px 0 4px;color:var(--m)}.agree{margin:10px 0 0}

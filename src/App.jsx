@@ -3,6 +3,7 @@ import { APP_NAME, PRICING, FILTER_PARTNER, CATEGORIES, REFERRAL } from './confi
 import { backend, STATE_KEY, supabase, cloud, redirectUrl, SetupMissing, LAST_EMAIL_KEY } from './storage.js';
 import { makeSeed, makeEmpty, uid, migrate, emptyIndoor, INDOOR_TYPES, OUTDOOR_TYPES } from './seed.js';
 import TagHelp from './TagHelp.jsx';
+import { Disclosure, Privacy, Terms, LEGAL_SCREENS, LEGAL_TITLES, CommissionNote, LegalLinks } from './Legal.jsx';
 import { parseTag, makeSnapshot, decodeSnapshot, unitUrl, liveUnitUrl, PART_RE } from './unit.js';
 import QRCode from 'qrcode';
 import { BRANDS, decodeSerial, decodeTonnage, estimateRefrigerant } from './decode.js';
@@ -14,7 +15,7 @@ const TABS = [['home', 'Home', '⌂'], ['equipment', 'Equipment', '⚙'], ['log'
 const TITLES = { home: APP_NAME, equipment: 'My Equipment', nameplate: 'Nameplate Lookup', log: 'Service Log', addlog: 'Add Service',
   filter: 'Air Filter', agreement: 'Maintenance Agreement', plus: `${APP_NAME} Plus`, bills: 'Power Bill & Comfort', reorder: 'Filter Reorder',
   beforecall: 'Thinking About a Call?', tips: 'Power Bill & Comfort', warranty: 'Warranty Tracker', homes: 'Homes & Equipment',
-  report: 'Service History Report', replace: 'Replacement Planning', settings: 'Account', company: 'Company', callhelper: 'Thinking About a Call?', insights: 'What Might Be Going On', signup: 'Create Account', auth: 'Sign In', scan: 'Scan the Data Tag', qr: 'Unit QR Label', unit: 'Unit History', paywall: `${APP_NAME} Plus` };
+  report: 'Service History Report', replace: 'Replacement Planning', settings: 'Account', company: 'Company', callhelper: 'Thinking About a Call?', insights: 'What Might Be Going On', signup: 'Create Account', auth: 'Sign In', scan: 'Scan the Data Tag', qr: 'Unit QR Label', unit: 'Unit History', paywall: `${APP_NAME} Plus`, ...LEGAL_TITLES };
 
 // Developer mode: unlocked per device with a password (Account tab > "Developer mode").
 // Only the SHA-256 hash is stored here. The old ?dev=1 flag ('homeownly-dev') is cleared for everyone.
@@ -50,7 +51,7 @@ export default function App({ authResult = { status: 'none' } }) {
     // Blank account: #/?fresh=1 (or ?fresh=1 in the page URL) always opens an empty account.
     if (/[?&]fresh=1/.test(location.hash + location.search)) { s = makeEmpty(); history.replaceState(null, '', location.pathname + '#/signup'); }
     // A unit QR opened on a device with no account must not create demo data.
-    else if (!s && parseHash().screen === 'unit') s = null; else s = s || makeSeed();
+    else if (!s && ['unit', ...LEGAL_SCREENS].includes(parseHash().screen)) s = null; /* public pages never seed demo data */ else s = s || makeSeed();
     setSt(s); setLoaded(true); }); }, []);
   useEffect(() => { if (st) backend.save(STATE_KEY, st); }, [st]);
   // ---- Accounts + cloud sync ----
@@ -96,17 +97,18 @@ export default function App({ authResult = { status: 'none' } }) {
   if (!loaded) return null;
   if (route.screen === 'unit') return <UnitPage st={st} up={setSt} param={route.param} />;
   if (!st && route.screen === 'auth') return <div className="app"><main><Auth ctx={{ session, go: (s) => { location.hash = '/' + s; } }} /></main></div>;
+  if (!st && LEGAL_SCREENS.includes(route.screen)) { const L = SCREENS[route.screen]; return <div className="app"><header className="top"><button className="back" onClick={() => history.back()} aria-label="Back">‹</button><h1>{TITLES[route.screen]}</h1></header><main><L /><LegalLinks className="center" /><p className="center small"><a href="#/home" onClick={() => setTimeout(() => location.reload(), 0)}>Open {APP_NAME}</a></p></main></div>; }
   if (!st) return null;
   const go = (s, p) => { location.hash = `/${s}${p ? '/' + p : ''}`; };
   const up = (fn) => setSt((s) => { const c = structuredClone(s); fn(c); return c; });
   const eq = st.equipment.find((e) => e.id === st.activeEquipmentId) || st.equipment[0];
   const ctx = { st, up, go, eq, plan: planStatus(st.plan), session, sync, authResult, dev: isDev(), examples: !!st.demo || isDev() };
   let { screen } = route;
-  if (!st.user.signedUp && screen !== 'auth') screen = 'signup';
+  if (!st.user.signedUp && screen !== 'auth' && !LEGAL_SCREENS.includes(screen)) screen = 'signup';
   if (session && screen === 'signup') screen = 'home';
   const S = SCREENS[screen] || Home;
   const gated = PAID.includes(screen);
-  const tab = TABS.find(([t]) => t === screen) ? screen : ({ nameplate: 'equipment', addlog: 'log', company: 'log', filter: 'home', agreement: 'home' }[screen] || (gated ? 'plus' : 'home'));
+  const tab = TABS.find(([t]) => t === screen) ? screen : ({ nameplate: 'equipment', addlog: 'log', company: 'log', filter: 'home', agreement: 'home', disclosure: 'settings', privacy: 'settings', terms: 'settings' }[screen] || (gated ? 'plus' : 'home'));
   return (
     <div className="app">
       <header className="top">
@@ -120,7 +122,7 @@ export default function App({ authResult = { status: 'none' } }) {
       {sync.status === 'ask' && <div className="banner ok"><b>Welcome!</b> This device already has {APP_NAME} data. Upload it to your account?
         <div className="two"><button className="btn" onClick={() => resolveUpload(true)}>⬆️ Upload my data</button><button className="btn ghost" onClick={() => { if (confirm('Start with an empty account? Data on this device will be replaced.')) resolveUpload(false); }}>Start empty</button></div></div>}
       <main>{gated ? <Gate ctx={ctx}><S key={screen + (route.param || "")} ctx={ctx} param={route.param} sub={route.sub} /></Gate> : <S key={screen + (route.param || "") + (route.sub || "")} ctx={ctx} param={route.param} sub={route.sub} />}</main>
-      {screen !== 'signup' && <nav className="tabs">{TABS.map(([t, l, i]) => (
+      {screen !== 'signup' && !(LEGAL_SCREENS.includes(screen) && !st.user.signedUp) && <nav className="tabs">{TABS.map(([t, l, i]) => (
         <button key={t} className={tab === t ? 'on' : ''} onClick={() => go(t)}><span>{i}</span>{l}</button>))}</nav>}
     </div>
   );
@@ -404,7 +406,7 @@ function Filter({ ctx }) {
     <Card><div className="big">{eq.filterSize}</div><p className="center muted">Your filter size (W × H × D, inches)</p>
       <div className={'banner ' + (n < 14 ? 'warn' : 'ok')}>{n < 0 ? `Overdue by ${-n} days` : `Next change in ${n} days — ${fmtDate(due)}`}</div>
       <button className="btn" onClick={() => up((s) => { s.equipment.find((x) => x.id === eq.id).lastFilterChange = new Date().toISOString().slice(0, 10); })}>✓ I changed it today</button>
-      <button className="btn ghost" onClick={() => go('reorder')}>🛒 Reorder / Auto-ship <span className="pill">PLUS</span></button></Card>
+      <button className="btn ghost" onClick={() => go('reorder')}>🛒 Reorder / Auto-ship <span className="pill">PLUS</span></button><CommissionNote /></Card>
     <Card title="Settings">
       <Field label="Filter size"><input value={eq.filterSize} onChange={set('filterSize')} /></Field>
       <Field label="Remind me every"><select value={eq.filterMonths} onChange={set('filterMonths')}>{[1, 2, 3, 6].map((m) => <option key={m} value={m}>{m} month{m > 1 ? 's' : ''}</option>)}</select></Field>
@@ -487,7 +489,7 @@ function Bills({ ctx }) {
 function Reorder({ ctx }) {
   const { eq } = ctx; const url = filterUrl(eq.filterSize);
   return (<Card><div className="big">{eq.filterSize}</div><p className="center muted">Exact size for “{eq.name}” · every {eq.filterMonths} months</p>
-    <a className="btn" href={url} target="_blank" rel="noopener sponsored">Reorder / Auto-ship</a>
+    <a className="btn" href={url} target="_blank" rel="noopener sponsored">Reorder / Auto-ship</a><CommissionNote />
     {ctx.examples && <p className="note">Partner: {FILTER_PARTNER.name}. Link: <code>{url}</code></p>}
     <p className="muted">Double-check the size printed on the edge of your current filter before ordering.</p></Card>);
 }
@@ -614,6 +616,7 @@ function Settings({ ctx }) {
       <button className="link" onClick={() => { localStorage.removeItem(DEV_KEY); location.reload(); }}>Turn off developer mode</button>
     </Card>}
     <p className="note center">{ctx.session ? 'Synced to your account · saved on this device for offline use' : 'Saved on this device'}</p>
+    <LegalLinks className="center" />
   </>);
 }
 
@@ -635,6 +638,7 @@ function Signup({ ctx }) {
       <Field label="Referral code (from your tech, optional)"><input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} autoCapitalize="characters" /></Field>
       {f.code.trim() && <p className={validCode(f.code) ? 'okt' : 'muted'}>{validCode(f.code) ? `✓ ${CODE_MSG}` : 'That code doesn’t look right yet. Codes look like ABCDE-XY.'}</p>}
       <button className="btn" onClick={() => { up((s) => { s.user = { ...s.user, name: f.name, email: f.email, referredBy: '', signedUp: true }; if (f.code.trim()) applyCode(s, f.code); }); go(st.demo ? 'home' : 'nameplate'); }}>Get started — it’s free</button>
+      <p className="muted small center agree">By continuing, you agree to the <a href="#/terms">Terms of Use</a> and <a href="#/privacy">Privacy Policy</a>. Filter links may earn us a commission (<a href="#/disclosure">Affiliate Disclosure</a>).</p>
     </Card>
     <button className="link" onClick={() => go('auth')}>Already have an account? Sign in ›</button>
     {st.demo ? <button className="btn ghost" onClick={startFresh}>🧹 Start fresh (empty account)</button>
@@ -644,7 +648,8 @@ function Signup({ ctx }) {
 
 const SCREENS = { scan: TagScan, qr: QrLabel, home: Home, equipment: Equipment, nameplate: Nameplate, log: Log, addlog: AddLog, filter: Filter, agreement: Agreement, plus: Plus,
   bills: Bills, reorder: Reorder, beforecall: CallHelper, tips: Bills, warranty: Warranty, homes: Homes, report: Report, replace: Replace,
-  company: Company, callhelper: CallHelper, insights: Insights, settings: Settings, signup: Signup, paywall: Paywall, auth: Auth };
+  company: Company, callhelper: CallHelper, insights: Insights, settings: Settings, signup: Signup, paywall: Paywall, auth: Auth,
+  disclosure: Disclosure, privacy: Privacy, terms: Terms };
 
 /* ---------------- SIGN IN (magic link or email + password) ---------------- */
 function Auth({ ctx }) {
@@ -666,6 +671,7 @@ function Auth({ ctx }) {
         <button className="btn ghost" disabled={busy || !email || f.pw.length < 8} onClick={async () => { const d = await run(() => supabase.auth.signUp({ email, password: f.pw, options: { emailRedirectTo: redirectUrl() } })); if (d) { if (d.session) go('home'); else setMsg({ k: 'ok', t: `Almost done — confirm your email from the link we sent to ${email}.` }); } }}>Create account</button>
       </div>
       {msg && <div className={'banner ' + msg.k}>{msg.t}</div>}
+      <p className="muted small center agree">By creating an account or signing in, you agree to the <a href="#/terms">Terms of Use</a> and <a href="#/privacy">Privacy Policy</a>.</p>
     </Card>
     <p className="note center">No account needed to try {APP_NAME} — <a href="#/home">keep using it on this device</a>.</p>
   </>);
@@ -773,5 +779,6 @@ function UnitPage({ st, up, param }) {
       <Card title={`Service history (${snap.h.length}${snap.n > snap.h.length ? ` most recent of ${snap.n}` : ''})`}>{snap.h.length ? snap.h.map(([dt, w, c], i) => <div key={i} className="log"><div><b>{w}</b><small>{fmtDate(dt)} · {c}</small></div></div>) : <p className="muted">No visits recorded yet.</p>}</Card>
       <p className="note">Entered by the homeowner. Estimates come from public serial-number patterns. Owner contact details, costs and notes are never included.</p>
       <p className="center small"><a href={st ? `${app}#/signup` : `${app}#/?fresh=1`}>Made with {APP_NAME}</a></p>
+      <LegalLinks className="center" />
     </main></div>);
 }

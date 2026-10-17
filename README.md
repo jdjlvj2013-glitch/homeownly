@@ -6,3 +6,4 @@ Rename: edit `APP_NAME` in `src/config.js` (also `index.html` <title> and `publi
 Key files: config.js (name, pricing, filter partner URL pattern, categories, referral), decode.js (serial/tonnage/refrigerant rules + sources),
 climate.js (Monroe degree-day normals), logic.js (trial, bill check), storage.js (swap localStorage → Supabase), seed.js (EXAMPLE data).
 Data model: homes[] → equipment[] {category:'hvac', …} → services[] {equipmentId}. Add categories in config.CATEGORIES.
+Legal pages (DRAFTS, lawyer review before launch): src/Legal.jsx → #/disclosure, #/privacy, #/terms; business name/contact in config.LEGAL (contact email is a TODO). `BASE=… node scripts/shots-legal.mjs` → screenshots/legal/.
