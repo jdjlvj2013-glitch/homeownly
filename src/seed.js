@@ -10,20 +10,34 @@ function bills() {
   y26.forEach((k, i) => out.push({ id: id(), month: `2026-${String(i + 1).padStart(2, '0')}`, kwh: k, dollars: +(k * 0.121).toFixed(2) }));
   return out;
 }
+// ---- System shape (schema 2) ----
+// A system = outdoor unit (top-level brand/model/serial + outdoorType, kept where they always were so
+// old data needs no moving) + indoor unit (e.indoor) + optional packageUnit flag (all-in-one, no separate indoor).
+export const INDOOR_TYPES = [['furnace', 'Furnace'], ['airhandler', 'Air handler'], ['fancoil', 'Fan coil'], ['', 'Not sure']];
+export const OUTDOOR_TYPES = [['ac', 'Air conditioner'], ['heatpump', 'Heat pump'], ['', 'Not sure']];
+export const emptyIndoor = () => ({ type: '', brand: 'other', model: '', serial: '' });
+// Non-destructive, idempotent upgrade of any saved state (local cache or cloud row).
+export function migrate(s) {
+  if (!s || !Array.isArray(s.equipment)) return s;
+  s.equipment = s.equipment.map((e) => ({ outdoorType: '', packageUnit: false, ...e, indoor: { ...emptyIndoor(), ...(e.indoor || {}) } }));
+  s.schema = 2; return s;
+}
 export function makeSeed() {
   const homeId = 'home1', sys1 = 'sys1', sys2 = 'sys2';
   return {
-    demo: true,
+    demo: true, schema: 2,
     user: { name: 'Example Homeowner', email: 'demo@example.com', referredBy: 'JSIMS-WM', signedUp: true },
     plan: { subscribed: false, trialStart: null, interval: null },
     techReferralCodes: [{ code: 'JSIMS-WM', techName: 'Joshua Sims (West Monroe, LA)' }],
     homes: [{ id: homeId, name: 'Example Home — 123 Demo St, West Monroe' }],
     activeEquipmentId: sys1,
     equipment: [
-      { id: sys1, homeId, category: 'hvac', name: 'Main house (EXAMPLE)', brand: 'carrier', model: '24ACC636A003', serial: '1214E12345',
+      { id: sys1, homeId, category: 'hvac', name: 'Main house (EXAMPLE)', brand: 'carrier', model: '24ACC636A003', serial: '1214E12345', outdoorType: 'ac', packageUnit: false,
+        indoor: { type: 'furnace', brand: 'carrier', model: '59SC5A060E17', serial: '2212A23456' },
         installDate: '2014-06-10', filterSize: '16x25x1', filterMonths: 3, lastFilterChange: '2026-07-20',
         warranty: { endDate: '2026-12-31', registered: false, notes: '10-yr parts if registered (verify with installer)' } },
-      { id: sys2, homeId, category: 'hvac', name: 'Upstairs (EXAMPLE)', brand: 'goodman', model: 'GSX140241', serial: '1906123456',
+      { id: sys2, homeId, category: 'hvac', name: 'Upstairs (EXAMPLE)', brand: 'goodman', model: 'GSX140241', serial: '1906123456', outdoorType: 'ac', packageUnit: false,
+        indoor: { type: 'airhandler', brand: 'goodman', model: 'AVPTC24B14', serial: '1907234567' },
         installDate: '2019-08-02', filterSize: '20x20x1', filterMonths: 2, lastFilterChange: '2026-09-01',
         warranty: { endDate: '2029-08-02', registered: true, notes: '' } },
     ],
@@ -65,7 +79,8 @@ export function makeEmpty() {
     techReferralCodes: [{ code: 'JSIMS-WM', techName: 'Joshua Sims (West Monroe, LA)' }],
     homes: [{ id: 'home1', name: 'My Home' }],
     activeEquipmentId: 'sys1',
-    equipment: [{ id: 'sys1', homeId: 'home1', category: 'hvac', name: 'My system', brand: 'other', model: '', serial: '', installDate: '',
+    schema: 2,
+    equipment: [{ id: 'sys1', homeId: 'home1', category: 'hvac', name: 'My system', brand: 'other', model: '', serial: '', outdoorType: '', packageUnit: false, indoor: emptyIndoor(), installDate: '',
       filterSize: '16x25x1', filterMonths: 3, lastFilterChange: today, warranty: { endDate: '', registered: false, notes: '' } }],
     services: [], agreement: null, preferredCompany: null, bills: [],
   };

@@ -24,7 +24,9 @@ const unb64 = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/
 export const PART_RE = /(capacitor|contactor|igniter|ignitor|flame sensor|blower motor|motor|coil|drain line|float switch|filter|compressor|txv|thermostat|board|relay)/gi;
 export function makeSnapshot(eq, services, max = 12) {
   const sv = services.filter((s) => s.equipmentId === eq.id).sort((a, b) => b.date.localeCompare(a.date)).slice(0, max); // keep the QR scannable
-  return { v: 1, u: eq.unitId, a: new Date().toLocaleDateString('en-CA'), b: eq.brand, m: eq.model, s: eq.serial, i: eq.installDate || '',
+  const ind = eq.indoor || {};
+  return { v: 2, u: eq.unitId, a: new Date().toLocaleDateString('en-CA'), b: eq.brand, m: eq.model, s: eq.serial, i: eq.installDate || '', o: eq.outdoorType || '',
+    p: eq.packageUnit ? 1 : 0, x: !eq.packageUnit && (ind.model || ind.serial || ind.type) ? { t: ind.type || '', b: ind.brand || 'other', m: ind.model || '', s: ind.serial || '' } : null,
     h: sv.map((x) => [x.date, x.work.slice(0, 60), x.company]), n: services.filter((s) => s.equipmentId === eq.id).length };
 }
 export const encodeSnapshot = (o) => b64(JSON.stringify(o));

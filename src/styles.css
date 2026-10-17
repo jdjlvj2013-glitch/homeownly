@@ -74,3 +74,6 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left
 .hero{padding-top:16px}
 .top h1{color:#fff}
 .demo a{color:#5a3d00;text-decoration:underline}
+.taghelp{margin:8px 0}.tagfig{margin:10px 0 4px;text-align:center}.tagfig figcaption{font-size:13.5px;color:var(--m);margin-top:6px;line-height:1.4;text-align:left}
+.unitsec{border-top:1px solid #eadfca;margin-top:12px;padding-top:10px}.toggle{display:flex;gap:10px;align-items:center;font-size:15px;margin:8px 0}.toggle input{width:20px;height:20px}
+.qrtip{background:#e8f4ec;color:#155c39;border-radius:12px;padding:12px 14px;font-size:14.5px;line-height:1.45}

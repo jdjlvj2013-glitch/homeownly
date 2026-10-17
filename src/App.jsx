@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { APP_NAME, PRICING, FILTER_PARTNER, CATEGORIES, REFERRAL } from './config.js';
 import { backend, STATE_KEY, supabase, cloud, redirectUrl, SetupMissing, LAST_EMAIL_KEY } from './storage.js';
-import { makeSeed, makeEmpty, uid } from './seed.js';
+import { makeSeed, makeEmpty, uid, migrate, emptyIndoor, INDOOR_TYPES, OUTDOOR_TYPES } from './seed.js';
+import TagHelp from './TagHelp.jsx';
 import { parseTag, makeSnapshot, decodeSnapshot, unitUrl, liveUnitUrl, PART_RE } from './unit.js';
 import QRCode from 'qrcode';
 import { BRANDS, decodeSerial, decodeTonnage, estimateRefrigerant } from './decode.js';
@@ -34,13 +35,14 @@ const applyCode = (s, c) => { const code = normCode(c); if (!validCode(code)) re
 const CODE_MSG = `Code applied: ${REFERRAL.discountPct}% off your first month`;
 // Real accounts: 2-month trial counted from account creation, unless a dev control set it on purpose.
 const realTrial = (s, user) => { if (!s.plan.subscribed && s.plan.trialSet !== 'dev' && user?.created_at) s.plan = { ...s.plan, trialStart: user.created_at }; return s; };
-const parseHash = () => { const [s, p] = location.hash.replace(/^#\/?/, '').split('/'); return { screen: s || 'home', param: p }; };
+const parseHash = () => { const [s, p, sub] = location.hash.replace(/^#\/?/, '').split('/'); return { screen: s || 'home', param: p, sub }; };
 
 export default function App({ authResult = { status: 'none' } }) {
   const [st, setSt] = useState(null);
   const [route, setRoute] = useState(parseHash());
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { Promise.all([backend.load(STATE_KEY), supabase.auth.getSession()]).then(([s, { data }]) => {
+    s = migrate(s);
     const sess = data.session;
     // Signed in (or just came back from an email link): never show demo data.
     if (sess) { s = s && !s.demo ? s : makeEmpty(); s = realTrial({ ...s, demo: false, plan: { ...s.plan }, user: { ...s.user, email: sess.user.email, signedUp: true } }, sess.user); setSt(s); setLoaded(true); return; }
@@ -66,11 +68,11 @@ export default function App({ authResult = { status: 'none' } }) {
   useEffect(() => { if (!userId || !loaded) { setSync({ status: 'off' }); return; }
     let dead = false; setSync({ status: 'loading' });
     const email = session.user.email;
-    const own = (s) => { s = structuredClone(s); s.demo = false; s.user = { ...s.user, email, signedUp: true }; return realTrial(s, session.user); };
+    const own = (s) => { s = migrate(structuredClone(s)); s.demo = false; s.user = { ...s.user, email, signedUp: true }; return realTrial(s, session.user); };
     cloud.load(userId).then((row) => { if (dead) return;
       if (row?.data && Object.keys(row.data).length) { setSt(own(row.data)); setSync({ status: 'ok', at: row.updated_at }); return; }
       const local = JSON.parse(localStorage.getItem(STATE_KEY) || 'null');
-      const hasLocal = local && !local.demo && (local.equipment?.some((e) => e.model || e.serial) || local.services?.length);
+      const hasLocal = local && !local.demo && (local.equipment?.some((e) => e.model || e.serial || e.indoor?.model || e.indoor?.serial) || local.services?.length);
       if (hasLocal) setSync({ status: 'ask', local });
       else { const e = own(makeEmpty()); setSt(e); cloud.save(userId, e).then(() => setSync({ status: 'ok' }), fail); }
     }, fail);
@@ -88,7 +90,7 @@ export default function App({ authResult = { status: 'none' } }) {
     }, 1500);
     return () => clearTimeout(t);
   }, [st, userId, sync.status === 'ask' || sync.status === 'loading' || sync.status === 'setup']);
-  const resolveUpload = (upload) => { const base = upload ? sync.local : makeEmpty(); const s = structuredClone(base); s.demo = false; s.user = { ...s.user, email: session.user.email, signedUp: true }; realTrial(s, session.user);
+  const resolveUpload = (upload) => { const base = upload ? sync.local : makeEmpty(); const s = migrate(structuredClone(base)); s.demo = false; s.user = { ...s.user, email: session.user.email, signedUp: true }; realTrial(s, session.user);
     setSt(s); setSync({ status: 'saving' }); cloud.save(userId, s).then(() => setSync({ status: 'ok' }), (e) => setSync({ status: e instanceof SetupMissing ? 'setup' : 'error', msg: e.message })); };
   useEffect(() => { const f = () => { setRoute(parseHash()); window.scrollTo(0, 0); }; addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
   if (!loaded) return null;
@@ -117,7 +119,7 @@ export default function App({ authResult = { status: 'none' } }) {
       {sync.status === 'error' && <div className="banner warn">☁️ Couldn’t reach the cloud — changes are saved on this device and will sync when you’re back online.</div>}
       {sync.status === 'ask' && <div className="banner ok"><b>Welcome!</b> This device already has {APP_NAME} data. Upload it to your account?
         <div className="two"><button className="btn" onClick={() => resolveUpload(true)}>⬆️ Upload my data</button><button className="btn ghost" onClick={() => { if (confirm('Start with an empty account? Data on this device will be replaced.')) resolveUpload(false); }}>Start empty</button></div></div>}
-      <main>{gated ? <Gate ctx={ctx}><S key={screen + (route.param || "")} ctx={ctx} param={route.param} /></Gate> : <S key={screen + (route.param || "")} ctx={ctx} param={route.param} />}</main>
+      <main>{gated ? <Gate ctx={ctx}><S key={screen + (route.param || "")} ctx={ctx} param={route.param} sub={route.sub} /></Gate> : <S key={screen + (route.param || "") + (route.sub || "")} ctx={ctx} param={route.param} sub={route.sub} />}</main>
       {screen !== 'signup' && <nav className="tabs">{TABS.map(([t, l, i]) => (
         <button key={t} className={tab === t ? 'on' : ''} onClick={() => go(t)}><span>{i}</span>{l}</button>))}</nav>}
     </div>
@@ -143,19 +145,31 @@ function eqInfo(e) {
   const d = decodeSerial(e.brand, e.serial); const t = decodeTonnage(e.model);
   return { d, t, refrigerant: estimateRefrigerant(d.ok ? d.year : e.installDate && +e.installDate.slice(0, 4)) };
 }
+const unitDecode = (u) => decodeSerial(u.brand, u.serial);
+const hasIndoor = (e) => !e.packageUnit && !!(e.indoor && (e.indoor.model || e.indoor.serial || e.indoor.type));
+const typeLabel = (list, v) => list.find(([k]) => k === v)?.[1];
+const brandLabel = (b) => BRANDS.find((x) => x.id === b)?.label;
+// Both units' ages; "oldest" drives replacement planning and the call helper.
+function unitAges(e) {
+  const out = [{ k: 'outdoor', label: e.packageUnit ? 'Package unit' : 'Outdoor unit', d: unitDecode(e) }];
+  if (hasIndoor(e)) out.push({ k: 'indoor', label: 'Indoor unit', d: unitDecode(e.indoor) });
+  const known = out.filter((x) => x.d.ok); const oldest = known.sort((a, b) => b.d.ageYears - a.d.ageYears)[0] || null;
+  return { list: out, oldest };
+}
+const ageTxt = (d) => d.ok ? `about ${Math.floor(d.ageYears)} yrs` : 'unknown';
 const filterDue = (e) => addMonths(e.lastFilterChange, e.filterMonths);
 const agreementVisitsLeft = (a) => a ? a.visitsIncluded - a.visitsUsed : 0;
 
 /* ---------------- FREE SCREENS ---------------- */
 function Home({ ctx }) {
-  const { st, eq, go } = ctx; const { d, t } = eqInfo(eq);
+  const { st, eq, go } = ctx; const { t } = eqInfo(eq); const { oldest, list: ages } = unitAges(eq); const d = oldest ? oldest.d : { ok: false };
   const spent = st.services.filter((s) => s.equipmentId === eq.id).reduce((a, s) => a + +s.cost, 0);
   const due = daysUntil(filterDue(eq)); const left = agreementVisitsLeft(st.agreement); const w = daysUntil(eq.warranty.endDate);
   return (<>
     <p className="hello">Hi {st.user.name.split(' ')[0]} 👋</p>
     <Card title={`${CATEGORIES[eq.category].icon} ${eq.name}`} onClick={() => go('nameplate', eq.id)} right={<span className="chev">›</span>}>
       <div className="stats">
-        <div><b>{d.ok ? `~${Math.floor(d.ageYears)} yrs` : '—'}</b><small>est. age</small></div>
+        <div><b>{d.ok ? `~${Math.floor(d.ageYears)} yrs` : '—'}</b><small>{ages.length > 1 ? 'oldest unit' : 'est. age'}</small></div>
         <div><b>{t ? `${t.tons} ton` : '—'}</b><small>est. size</small></div>
         <div><b>{money(spent)}</b><small>total spent</small></div>
       </div>
@@ -182,37 +196,61 @@ function Equipment({ ctx }) {
     {list.map((e) => { const { d, t } = eqInfo(e); return (
       <Card key={e.id} onClick={() => { up((s) => { s.activeEquipmentId = e.id; }); go('nameplate', e.id); }}>
         <div className="rem"><span>{CATEGORIES[e.category].icon}</span><div><b>{e.name}</b>
-          <small>{BRANDS.find((b) => b.id === e.brand)?.label} · {d.ok ? `~${Math.floor(d.ageYears)} yrs` : 'age unknown'}{t ? ` · ${t.tons} ton` : ''}</small></div>
+          <small>{unitAges(e).list.map((u) => `${u.label.replace(' unit', '')} ${u.d.ok ? `~${Math.floor(u.d.ageYears)} yrs` : 'age unknown'}`).join(' · ')}{t ? ` · ${t.tons} ton` : ''}</small>
+          {!e.packageUnit && !hasIndoor(e) && <small className="okt">＋ Add indoor unit</small>}</div>
           {e.id === st.activeEquipmentId && <span className="pill g">Active</span>}<span className="chev">›</span></div>
       </Card>); })}
-    {!plan.entitled && st.equipment.length > 1 && <p className="muted">{st.equipment.length - 1} more saved item(s) hidden — multiple systems & homes are a Plus feature.</p>}
-    <button className="btn ghost" onClick={() => go('homes')}>＋ Add equipment or another home <span className="pill">PLUS</span></button>
+    <p className="muted small">Free includes one complete system — the outdoor unit and the indoor unit together.</p>
+    {!plan.entitled && st.equipment.length > 1 && <p className="muted">{st.equipment.length - 1} more saved system(s) hidden — more than one system, and multiple homes, are Plus features.</p>}
+    <button className="btn ghost" onClick={() => go('homes')}>＋ Add another system or home <span className="pill">PLUS</span></button>
     <h3 className="sect">Coming later</h3>
     <div className="chips">{Object.entries(CATEGORIES).filter(([, c]) => !c.enabled).map(([k, c]) => <span key={k} className="chip">{c.icon} {c.label}</span>)}</div>
   </>);
 }
 
+function UnitFields({ u, set, types, typeKey, scan }) {
+  return (<>
+    {types && <Field label="Type"><select value={u[typeKey] || ''} onChange={set(typeKey)}>{types.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>}
+    <Field label="Brand"><select value={u.brand} onChange={set('brand')}>{BRANDS.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</select></Field>
+    <Field label="Model number"><input value={u.model} onChange={set('model')} autoCapitalize="characters" /></Field>
+    <Field label="Serial number"><input value={u.serial} onChange={set('serial')} autoCapitalize="characters" /></Field>
+    <button className="btn ghost" onClick={scan}>📷 Scan the data tag</button>
+  </>);
+}
+function DecodeRows({ d, t, refrigerant }) {
+  return (<>
+    <Row k="Manufactured" v={d.ok ? `${MONTHS_S[d.month - 1]} ${d.year} (est.)` : 'Not decoded'} />
+    <Row k="Age" v={d.ok ? `About ${d.ageYears} years` : '—'} />
+    {t !== undefined && <Row k="Size" v={t ? `${t.tons} ton (est.)` : 'Not decoded'} />}
+    {refrigerant && <Row k="Refrigerant" v={refrigerant} />}
+    {d.ok ? <p className="muted small">How we read it: {d.rule}.{t && t.note ? ` ${t.note}.` : ''}</p> : <p className="muted small">{d.message}</p>}
+  </>);
+}
 function Nameplate({ ctx, param }) {
   const { st, up } = ctx; const e = st.equipment.find((x) => x.id === param) || ctx.eq;
   const set = (k) => (ev) => up((s) => { s.equipment.find((x) => x.id === e.id)[k] = ev.target.value; });
-  const { d, t, refrigerant } = eqInfo(e);
+  const setIn = (k) => (ev) => up((s) => { const x = s.equipment.find((q) => q.id === e.id); x.indoor = { ...emptyIndoor(), ...x.indoor, [k]: ev.target.value }; });
+  const [addIn, setAddIn] = useState(false);
+  const { d, t, refrigerant } = eqInfo(e); const di = unitDecode(e.indoor || emptyIndoor()); const showIn = !e.packageUnit && (hasIndoor(e) || addIn);
   return (<>
-    <Card title="From the outdoor unit’s label">
+    <Card title="System">
       <Field label="Nickname"><input value={e.name} onChange={set('name')} /></Field>
-      <Field label="Brand"><select value={e.brand} onChange={set('brand')}>{BRANDS.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</select></Field>
-      <Field label="Model number"><input value={e.model} onChange={set('model')} autoCapitalize="characters" /></Field>
-      <Field label="Serial number"><input value={e.serial} onChange={set('serial')} autoCapitalize="characters" /></Field>
-      <button className="btn ghost" onClick={() => ctx.go('scan', e.id)}>📷 Scan the data tag</button>
+      <label className="toggle"><input type="checkbox" checked={!!e.packageUnit} onChange={(ev) => up((s) => { s.equipment.find((x) => x.id === e.id).packageUnit = ev.target.checked; })} />This is a package unit (all-in-one)</label>
+      {e.packageUnit && <p className="muted small">Package units hold the heating and cooling parts in one cabinet, usually outside or on the roof — so there’s just one data tag.</p>}
     </Card>
+    <Card title={e.packageUnit ? '📦 Package unit (all-in-one)' : '🌀 Outdoor unit (AC / heat pump)'}>
+      <UnitFields u={e} set={set} types={e.packageUnit ? null : OUTDOOR_TYPES} typeKey="outdoorType" scan={() => ctx.go('scan', e.id)} />
+      <TagHelp which="outdoor" />
+      <div className="unitsec"><DecodeRows d={d} t={t} refrigerant={refrigerant} /></div>
+    </Card>
+    {!e.packageUnit && (showIn ? <Card title="🔥 Indoor unit (furnace / air handler)">
+      <UnitFields u={e.indoor} set={setIn} types={INDOOR_TYPES} typeKey="type" scan={() => ctx.go('scan', `${e.id}/indoor`)} />
+      <TagHelp which={e.indoor.type || 'indoor'} />
+      <div className="unitsec"><DecodeRows d={di} /></div>
+    </Card> : <Card title="🔥 Indoor unit (furnace / air handler)"><p className="muted">Most homes have an indoor unit too — a furnace, air handler or fan coil in a closet, attic, garage or crawlspace. Adding it is free.</p>
+      <button className="btn" onClick={() => setAddIn(true)}>＋ Add indoor unit</button></Card>)}
     <button className="btn ghost" onClick={() => ctx.go('qr', e.id)}>🔳 Unit QR label <span className="pill">PLUS</span></button>
-    <Card title="Estimated details">
-      <Row k="Manufactured" v={d.ok ? `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.month - 1]} ${d.year} (est.)` : 'Not decoded'} />
-      <Row k="Age" v={d.ok ? `About ${d.ageYears} years` : '—'} />
-      <Row k="Size" v={t ? `${t.tons} ton (est.)` : 'Not decoded'} />
-      <Row k="Refrigerant" v={refrigerant} />
-      {d.ok ? <p className="muted">How we read it: {d.rule}. {t && t.note}.</p> : <p className="muted">{d.message}</p>}
-      <p className="note">These are estimates from public serial-number patterns. Your HVAC tech can confirm from the nameplate.</p>
-    </Card>
+    <p className="note">Ages and sizes are estimates from public serial-number patterns. Your HVAC tech can confirm from the nameplate.</p>
   </>);
 }
 
@@ -306,7 +344,7 @@ function CallHelper({ ctx, param }) {
       <Row k="Usual service call" v={typ?.ready ? `about ${money(typ.median)} (${typ.count} visits)` : 'not enough records yet'} />
       {ag && <Row k="Agreement" v={`${agreementVisitsLeft(ag)} included visit(s) left`} />}
       {ag && <Row k="Perks" v={ag.perks.join(' · ')} />}
-      <Row k="System age" v={d.ok ? `about ${Math.floor(d.ageYears)} years` : 'unknown'} />
+      {unitAges(eq).list.map((u) => <Row key={u.k} k={`${u.label} age`} v={u.d.ok ? `about ${Math.floor(u.d.ageYears)} years` : 'unknown'} />)}
       <Row k="Repairs, last 12 months" v={recent.length ? `${recent.length} (${recent.map((s) => s.work.replace(/^service call:\s*/i, '')).join('; ')})` : 'none'} />
       <Row k="Warranty" v={w > 0 ? `until ${fmtDate(eq.warranty.endDate)}${eq.warranty.registered ? '' : ' (not registered)'}` : 'ended'} />
       <Row k="Air filter" v={overdue > 0 ? `${overdue} days overdue` : 'up to date'} />
@@ -332,8 +370,8 @@ function Insights({ ctx, param }) {
     </Card>
     {call}
   </>);
-  const { d } = eqInfo(eq); const sym = symptom(param);
-  const list = historyInsights(mine, eq, d.ok ? d.ageYears : 0, param, -daysUntil(filterDue(eq)));
+  const old = unitAges(eq).oldest; const sym = symptom(param);
+  const list = historyInsights(mine, eq, old ? old.d.ageYears : 0, param, -daysUntil(filterDue(eq)));
   return (<>
     <div className="banner warn"><b>A guess, not a diagnosis.</b> These are possibilities to mention to your tech, based only on your records.</div>
     {sym && <p className="muted">For: {sym.i} {sym.l}</p>}
@@ -399,11 +437,12 @@ function Plus({ ctx }) {
   const items = [['callhelper', '☎️', 'Thinking about a call?', 'Safety checks, owner’s-manual checks, your costs & perks, and what your history suggests — one flow'],
     ['bills', '⚡', 'Power bill & comfort', 'Spot unusual bill jumps, plus thermostat tips'], ['reorder', '🛒', 'Filter auto-ship', 'Right size, delivered on schedule'],
     ['warranty', '🛡️', 'Warranty tracker', 'End date & registration reminder'], ['replace', '🗓️', 'Replacement planning', 'Plan and budget ahead by system age'],
-    ['homes', '🏘️', 'Multiple homes & equipment', 'Track every system you own'], ['report', '📄', 'Home-sale history report', 'Printable / PDF service record'],
+    ['homes', '🏘️', 'More systems & homes', 'Track every system you own (one complete system is free)'], ['report', '📄', 'Home-sale history report', 'Printable / PDF service record'],
     ['log', '💵', 'Your typical costs', 'Per-company costs from your own records']];
   return (<>
     <Card><p className="center"><b>{plan.label}</b></p><p className="center muted">{plan.notStarted ? `Your ${PRICING.trialDays / 30}-month free trial starts the first time you open a Plus feature.` : `${money(PRICING.monthly)}/mo or ${money(PRICING.yearly)}/yr`}</p>
       {st.plan.referralDiscount && !st.plan.subscribed && <p className="center okt">🎉 {CODE_MSG} — {money(PRICING.monthly * (1 - st.plan.referralDiscount.pct / 100))} first month, then {money(PRICING.monthly)}/mo</p>}</Card>
+    <p className="muted small center">Free forever: one complete system (outdoor + indoor unit), service log, reminders and the data-tag scan. Plus adds more systems and homes, plus everything below.</p>
     {items.map(([k, i, t, d]) => <Card key={k} onClick={() => go(k)}><div className="rem"><span>{i}</span><div><b>{t}</b><small>{d}</small></div><span className="chev">›</span></div></Card>)}
   </>);
 }
@@ -414,7 +453,8 @@ function Paywall({ ctx }) {
   const first = disc ? PRICING.monthly * (1 - disc.pct / 100) : null;
   return (<Card>
     <div className="big">★</div><h2 className="center">{plan.expired ? 'Your free trial has ended' : `Upgrade to ${APP_NAME} Plus`}</h2>
-    <p className="center muted">Keep Power Bill Check, warranty tracking, multi-home, reports and more.</p>
+    <p className="center muted">Keep Power Bill Check, warranty tracking, more systems and homes, reports and more.</p>
+    <p className="center muted small">Your first complete system (outdoor + indoor unit) and its service log stay free either way.</p>
     {disc && <div className="banner ok center">🎉 <b>{CODE_MSG}</b> (code {disc.code})</div>}
     <button className="btn" onClick={() => sub('monthly')}>{disc ? <>{money(first)} first month, then {money(PRICING.monthly)}/mo</> : <>{money(PRICING.monthly)} / month</>}</button>
     <button className="btn ghost" onClick={() => sub('yearly')}>{money(PRICING.yearly)} / year <small>(save 35%)</small></button>
@@ -494,7 +534,7 @@ function Homes({ ctx }) {
       <Field label="Home"><select value={home} onChange={(e) => setHome(e.target.value)}>{st.homes.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}</select></Field>
       <Field label="Nickname"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Garage apartment" /></Field>
       <Field label="Category"><select>{Object.entries(CATEGORIES).map(([k, c]) => <option key={k} disabled={!c.enabled}>{c.label}{c.enabled ? '' : ' (coming soon)'}</option>)}</select></Field>
-      <button className="btn" disabled={!name} onClick={() => { const id = uid(); up((s) => { s.equipment.push({ id, homeId: home, category: 'hvac', name, brand: 'other', model: '', serial: '', installDate: '', filterSize: '16x25x1', filterMonths: 3, lastFilterChange: new Date().toISOString().slice(0, 10), warranty: { endDate: '', registered: false, notes: '' } }); s.activeEquipmentId = id; }); go('nameplate', id); }}>Add</button>
+      <button className="btn" disabled={!name} onClick={() => { const id = uid(); up((s) => { s.equipment.push({ id, homeId: home, category: 'hvac', name, brand: 'other', model: '', serial: '', outdoorType: '', packageUnit: false, indoor: emptyIndoor(), installDate: '', filterSize: '16x25x1', filterMonths: 3, lastFilterChange: new Date().toISOString().slice(0, 10), warranty: { endDate: '', registered: false, notes: '' } }); s.activeEquipmentId = id; }); go('nameplate', id); }}>Add</button>
       <button className="btn ghost" onClick={() => { const n = prompt('Home name / address'); if (n) up((s) => { s.homes.push({ id: uid(), name: n }); }); }}>＋ Add another home</button>
     </Card>
   </>);
@@ -510,7 +550,9 @@ function Report({ ctx }) {
         {st.equipment.filter((e) => e.homeId === h.id).map((e) => { const { d, t, refrigerant } = eqInfo(e); const sv = st.services.filter((s) => s.equipmentId === e.id).sort((a, b) => b.date.localeCompare(a.date));
           return (<div key={e.id} className="rep">
             <h4>{e.name}</h4>
-            <p className="small">{BRANDS.find((b) => b.id === e.brand)?.label} · Model {e.model} · Serial {e.serial}<br />Est. built {d.ok ? d.year : '—'} · {t ? `${t.tons} ton` : ''} · {refrigerant} · Filter {e.filterSize}<br />
+            <p className="small"><b>{e.packageUnit ? 'Package unit' : `Outdoor unit${e.outdoorType ? ` (${typeLabel(OUTDOOR_TYPES, e.outdoorType)})` : ''}`}:</b> {brandLabel(e.brand)} · Model {e.model || '—'} · Serial {e.serial || '—'} · Est. built {d.ok ? d.year : '—'}{t ? ` · ${t.tons} ton` : ''} · {refrigerant}<br />
+              {hasIndoor(e) && (() => { const di = unitDecode(e.indoor); return <><b>Indoor unit{e.indoor.type ? ` (${typeLabel(INDOOR_TYPES, e.indoor.type)})` : ''}:</b> {brandLabel(e.indoor.brand)} · Model {e.indoor.model || '—'} · Serial {e.indoor.serial || '—'} · Est. built {di.ok ? di.year : '—'}<br /></>; })()}
+              Filter {e.filterSize}<br />
               Warranty to {fmtDate(e.warranty.endDate)} ({e.warranty.registered ? 'registered' : 'not registered'})</p>
             <table><thead><tr><th>Date</th><th>Work</th><th>By</th></tr></thead><tbody>{sv.map((s) => <tr key={s.id}><td>{fmtDate(s.date)}</td><td>{s.work}</td><td>{s.company}</td></tr>)}</tbody></table>
           </div>); })}</div>)}
@@ -520,12 +562,13 @@ function Report({ ctx }) {
 }
 
 function Replace({ ctx }) {
-  const { eq } = ctx; const { d } = eqInfo(eq); const age = d.ok ? d.ageYears : null;
+  const { eq } = ctx; const ua = unitAges(eq); const age = ua.oldest ? ua.oldest.d.ageYears : null;
   const [budget, setBudget] = useState(''); const [target, setTarget] = useState(15);
   const yrs = age !== null ? Math.max(1, target - age) : null; const monthly = budget && yrs ? +budget / (yrs * 12) : null;
   return (<>
     <Card title={eq.name}>
-      <Row k="Estimated age" v={age !== null ? `About ${age} years` : 'Unknown'} />
+      {ua.list.map((u) => <Row key={u.k} k={`${u.label} age`} v={u.d.ok ? `About ${u.d.ageYears} years` : 'Unknown'} />)}
+      {ua.list.length > 1 && age !== null && <p className="muted small">Planning below uses the oldest unit ({ua.oldest.label.toLowerCase()}). Indoor and outdoor units are often replaced together, but not always — ask your tech.</p>}
       <p>Central systems in our humid climate commonly last somewhere around 12–17+ years, and good maintenance helps. Planning ahead just means no surprises.</p>
       <Field label="Plan for replacement around age"><select value={target} onChange={(e) => setTarget(+e.target.value)}>{[12, 13, 14, 15, 16, 17, 18, 20].map((y) => <option key={y}>{y}</option>)}</select></Field>
       <Field label="Budget amount (ask your tech for a number for your home)"><input inputMode="numeric" value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="Enter your budget" /></Field>
@@ -631,8 +674,9 @@ function Auth({ ctx }) {
 function startFresh() { localStorage.setItem(STATE_KEY, JSON.stringify(makeEmpty())); location.hash = '/signup'; location.reload(); }
 
 /* ---------------- DATA TAG SCAN (FREE) ---------------- */
-function TagScan({ ctx, param }) {
-  const { st, up, go } = ctx; const e = st.equipment.find((x) => x.id === param) || ctx.eq;
+function TagScan({ ctx, param, sub }) {
+  const { st, up, go } = ctx; const e0 = st.equipment.find((x) => x.id === param) || ctx.eq;
+  const indoor = sub === 'indoor'; const e = indoor ? { ...emptyIndoor(), ...e0.indoor, id: e0.id, name: e0.name } : e0;
   const [img, setImg] = useState(''); const [busy, setBusy] = useState(0); const [err, setErr] = useState('');
   const [f, setF] = useState(null);
   const read = async (src) => {
@@ -649,8 +693,9 @@ function TagScan({ ctx, param }) {
   const file = (ev) => { const fl = ev.target.files?.[0]; if (fl) { const r = new FileReader(); r.onload = () => read(r.result); r.readAsDataURL(fl); } };
   const d = f ? decodeSerial(f.brand, f.serial) : null;
   return (<>
-    <Card title="Photo of the data tag">
-      <p className="muted">The data tag is the metal or sticker label on the side of the outdoor unit (or inside the furnace closet door area). Take the photo from outside the unit — no need to open anything.</p>
+    <Card title={indoor ? 'Indoor unit (furnace / air handler) — data tag photo' : (e0.packageUnit ? 'Package unit — data tag photo' : 'Outdoor unit (AC / heat pump) — data tag photo')}>
+      <p className="muted">{indoor ? 'The indoor unit’s data tag is a metal or sticker label on the furnace, air handler or fan coil cabinet.' : 'The data tag is a metal or sticker label on a side panel of the outdoor unit.'} Most can be photographed without opening anything.</p>
+      <TagHelp which={indoor ? (e.type || 'indoor') : 'outdoor'} open />
       <label className="btn">📷 Take or upload a photo<input type="file" accept="image/*" capture="environment" onChange={file} hidden /></label>
       {ctx.examples && <button className="btn ghost" onClick={() => read(`${import.meta.env.BASE_URL}example-tag.png`)}>Try with an example tag</button>}
       {img && <img className="tagimg" src={img} alt="Data tag" />}
@@ -664,7 +709,7 @@ function TagScan({ ctx, param }) {
       <Field label="Model number"><input value={f.model} onChange={(ev) => setF({ ...f, model: ev.target.value.toUpperCase() })} /></Field>
       <Field label="Serial number"><input value={f.serial} onChange={(ev) => setF({ ...f, serial: ev.target.value.toUpperCase() })} /></Field>
       {d && <p className="muted small">{d.ok ? `Looks like it was built around ${MONTHS_S[d.month - 1]} ${d.year} (estimate).` : 'Age can’t be estimated from this serial yet.'}</p>}
-      <button className="btn" disabled={!f.model && !f.serial} onClick={() => { up((s) => { const x = s.equipment.find((q) => q.id === e.id); x.brand = f.brand; x.model = f.model; x.serial = f.serial; }); go('nameplate', e.id); }}>Save to “{e.name}”</button>
+      <button className="btn" disabled={!f.model && !f.serial} onClick={() => { up((s) => { const x = s.equipment.find((q) => q.id === e.id); const tgt = indoor ? (x.indoor = { ...emptyIndoor(), ...x.indoor }) : x; tgt.brand = f.brand; tgt.model = f.model; tgt.serial = f.serial; }); go('nameplate', e.id); }}>{indoor ? `Save indoor unit to “${e.name}”` : `Save to “${e.name}”`}</button>
     </Card>}
   </>);
 }
@@ -677,16 +722,19 @@ function QrLabel({ ctx, param }) {
   const live = !!ctx.session && ['ok', 'saving'].includes(ctx.sync.status);
   const snap = e.unitId ? makeSnapshot(e, st.services) : null; const url = snap ? (live ? liveUnitUrl(e.unitId) : unitUrl(snap)) : '';
   useEffect(() => { if (url) { QRCode.toString(url, { type: 'svg', errorCorrectionLevel: 'L', margin: 1 }).then(setSvg); QRCode.toDataURL(url, { errorCorrectionLevel: 'L', margin: 2, width: 900 }).then(setPng); } }, [url]);
-  if (!snap) return null; const { d } = eqInfo(e);
+  if (!snap) return null; const { d } = eqInfo(e); const di = hasIndoor(e) ? unitDecode(e.indoor) : null;
   return (<>
     <div className="qrlabel printarea">
       <div className="qrhead">⌂ {APP_NAME} · Unit history</div>
       <div className="qr" dangerouslySetInnerHTML={{ __html: svg }} />
-      <p className="qrsub"><b>{BRANDS.find((b) => b.id === e.brand)?.label.split(' /')[0]}</b> · {e.model}<br />S/N {e.serial}{d.ok ? ` · built ~${d.year}` : ''}</p>
+      <p className="qrsub">{di && <><b>Indoor:</b> {brandLabel(e.indoor.brand)?.split(' /')[0]} · {e.indoor.model || '—'}{di.ok ? ` · ~${di.year}` : ''}<br /></>}
+        <b>{e.packageUnit ? 'Package' : 'Outdoor'}:</b> {brandLabel(e.brand)?.split(' /')[0]} · {e.model || '—'}{d.ok ? ` · ~${d.year}` : ''}</p>
       <p className="qrnote">Scan for this unit’s service history{live ? '' : ` · Data as of ${fmtDate(snap.a)}`}</p>
     </div>
     <div className="two noprint"><button className="btn" onClick={() => window.print()}>🖨️ Print</button><a className="btn ghost" href={png} download={`homeownly-unit-${e.unitId}.png`}>⬇️ Download</a></div>
-    <Card><p>📌 <b>Stick this on your unit</b> (outdoor unit side panel or near the indoor unit) so any tech can see the history.</p>
+    <div className="qrtip noprint">📌 {e.packageUnit ? <><b>Attach this label to the package unit</b>, on a side panel away from the fan and away from direct sun if you can.</>
+      : <><b>Attach this label to the indoor unit (furnace or air handler), not the outdoor unit.</b> It stays cleaner and out of the weather, and it’s where techs start most service calls.</>}</div>
+    <Card>
       {live ? <p className="muted small">✓ Live label — scanning it always shows the latest history from your account. No need to reprint.</p>
         : <p className="muted small">The label holds a snapshot of the {snap.h.length} most recent visits, as of today. <b>Reprint it after new service visits</b> so it stays current. <button className="link" onClick={() => ctx.go('auth')}>Sign in for a live label that updates itself ›</button></p>}
       <p className="muted small">Techs see equipment info and service history only — never your name, address, costs or notes.</p>
@@ -713,11 +761,14 @@ function UnitPage({ st, up, param }) {
     <main>
       {snap.live ? <div className="banner ok">Live history · last updated <b>{fmtDate(snap.a)}</b>.</div>
         : <div className={'banner ' + (age > 90 ? 'warn' : 'ok')}>Data as of <b>{fmtDate(snap.a)}</b>{age > 90 ? ` (${Math.floor(age / 30)} months ago) — newer visits may not be shown.` : '.'}</div>}
-      <Card title="Equipment">
+      <Card title={snap.p ? 'Package unit (all-in-one)' : `Outdoor unit${snap.o ? ` · ${typeLabel(OUTDOOR_TYPES, snap.o)}` : ''}`}>
         <Row k="Brand" v={BRANDS.find((b) => b.id === snap.b)?.label || '—'} /><Row k="Model" v={snap.m || '—'} /><Row k="Serial" v={snap.s || '—'} />
         <Row k="Built (est.)" v={d.ok ? `${MONTHS_S[d.month - 1]} ${d.year}` : '—'} /><Row k="Age (est.)" v={d.ok ? `about ${Math.floor(d.ageYears)} years` : '—'} />
         <Row k="Size (est.)" v={t ? `${t.tons} ton` : '—'} />{snap.i && <Row k="Installed" v={fmtDate(snap.i)} />}
       </Card>
+      {snap.x && (() => { const dx = decodeSerial(snap.x.b, snap.x.s); return <Card title={`Indoor unit${snap.x.t ? ` · ${typeLabel(INDOOR_TYPES, snap.x.t)}` : ''}`}>
+        <Row k="Brand" v={brandLabel(snap.x.b) || '—'} /><Row k="Model" v={snap.x.m || '—'} /><Row k="Serial" v={snap.x.s || '—'} />
+        <Row k="Built (est.)" v={dx.ok ? `${MONTHS_S[dx.month - 1]} ${dx.year}` : '—'} /><Row k="Age (est.)" v={dx.ok ? `about ${Math.floor(dx.ageYears)} years` : '—'} /></Card>; })()}
       {parts.length > 0 && <Card title="Parts mentioned"><div className="chips">{parts.map((p) => <span key={p} className="chip">{p}</span>)}</div></Card>}
       <Card title={`Service history (${snap.h.length}${snap.n > snap.h.length ? ` most recent of ${snap.n}` : ''})`}>{snap.h.length ? snap.h.map(([dt, w, c], i) => <div key={i} className="log"><div><b>{w}</b><small>{fmtDate(dt)} · {c}</small></div></div>) : <p className="muted">No visits recorded yet.</p>}</Card>
       <p className="note">Entered by the homeowner. Estimates come from public serial-number patterns. Owner contact details, costs and notes are never included.</p>
